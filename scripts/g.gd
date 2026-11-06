@@ -16,7 +16,7 @@ signal market_changed
 signal quake(mag: float)
 signal incident(kind: String, data: Dictionary)
 
-const APP_VERSION := "1.2.0"
+const APP_VERSION := "1.2.1"
 const SAVE_PATH := "user://save.json"
 const MIN_PER_SEC := 5.0          # 1× 時，每現實秒 = 5 遊戲分鐘
 const START_MONEY := 20000

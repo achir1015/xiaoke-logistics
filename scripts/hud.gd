@@ -303,6 +303,7 @@ func _build_game_ui() -> void:
 	info_lbl = RichTextLabel.new()
 	info_lbl.bbcode_enabled = true
 	info_lbl.fit_content = true
+	info_lbl.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
 	info_lbl.custom_minimum_size = Vector2(240, 0)
 	info_lbl.add_theme_font_size_override("normal_font_size", 15)
 	info_lbl.add_theme_font_size_override("bold_font_size", 17)
@@ -478,7 +479,7 @@ func _refresh_list() -> void:
 	var arr: Array = G.offers if showing_offers else G.contracts
 	if arr.is_empty():
 		var l := _lbl("目前沒有新委託，稍等一下客戶就會打來。" if showing_offers else "還沒有簽約的委託。到「新委託」挑幾張吧！", 14, DIM)
-		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		l.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
 		l.custom_minimum_size.x = 270
 		list_box.add_child(l)
 		list_scroll.custom_minimum_size.y = 60
@@ -625,7 +626,7 @@ func show_market() -> void:
 	grid.columns = 2
 	grid.add_theme_constant_override("h_separation", 16)
 	v.add_child(grid)
-	v.move_child(grid, 1)
+	v.move_child(grid, 0)
 	for it in [["國際油價（美元／桶）", G.oil_hist, Color(1.0, 0.6, 0.25), "%.0f"], ["物價指數（開業時 = 100）", G.cpi_hist, Color(0.45, 0.8, 1.0), "%.1f"]]:
 		var col := VBoxContainer.new()
 		col.add_child(_lbl(it[0], 14, DIM))
@@ -636,14 +637,15 @@ func show_market() -> void:
 	var fx := RichTextLabel.new()
 	fx.bbcode_enabled = true
 	fx.fit_content = true
-	fx.custom_minimum_size = Vector2(520, 0)
+	fx.custom_minimum_size = Vector2(500, 0)
+	fx.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
 	var mult := G.cpi / 100.0
 	var sur := (G.oil - 80.0) / 80.0 * 20.0
 	fx.text = "目前油價 [b]$%.1f[/b]（%s%.1f%%），物價指數 [b]%.1f[/b]（%s%.2f%%）\n\n對你的影響：\n• 堆高機燃料費：每日 [b]%s[/b]（油價 × 0.5 × 台數）\n• 建造、地租、薪水、維護費 × [b]%.2f[/b]\n• 新委託報酬 × %.2f，燃油附加費 %s%.0f%%\n\n油價會受國際局勢、颱風影響；油價越高，物價也漲得越快。" % [
 		G.oil, "+" if G.oil_change() >= 0 else "", G.oil_change(), G.cpi, "+" if G.cpi_change() >= 0 else "", G.cpi_change(),
 		G.fmt(G.fuel_daily()), mult, mult, "+" if sur >= 0 else "", sur]
 	v.add_child(fx)
-	v.move_child(fx, 2)
+	v.move_child(fx, 1)
 
 func cinematic(on: bool) -> void:
 	cine = on
@@ -685,7 +687,7 @@ func _refresh_docs() -> void:
 		return
 	if intl.is_empty():
 		var l := _lbl("目前沒有國際貨物。\n接下貨輪或貨機的委託後，這裡會列出提單、發票等文件和海關通關進度。", 13, DIM)
-		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		l.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
 		l.custom_minimum_size.x = 290
 		doc_body.add_child(l)
 		doc_panel.size.y = 0
@@ -734,7 +736,7 @@ func _doc_detail(c: Dictionary) -> Control:
 		var mark := "■" if i < cur else ("▶" if i == cur else "□")
 		prog += "%s%s　" % [mark, names[order[i]]]
 	var pl := _lbl(prog, 12, ink)
-	pl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	pl.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
 	pl.custom_minimum_size.x = 270
 	v.add_child(pl)
 	var stl := _lbl("目前：%s%s" % [G.STAGE_NAMES.get(st, st), ("（%s）" % cu.cls) if cu.cls != "" and st != "released" else ""], 13, green if st == "released" else Color(0.2, 0.35, 0.7))
@@ -788,7 +790,7 @@ func add_toast(text: String, kind: String = "info") -> void:
 		col = Color(0.45, 0.17, 0.16, 0.95)
 	var p := _panel(col, 10, 10)
 	var l := _lbl(text, 15)
-	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	l.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
 	l.custom_minimum_size.x = 420
 	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	p.add_child(l)
@@ -911,23 +913,34 @@ func show_dialog(title: String, body: String, buttons: Array, width := 460, paus
 	var p := _panel(BG2, 16, 20)
 	p.custom_minimum_size.x = width
 	cc.add_child(p)
+	_dlg_panel = p
+	var outer := VBoxContainer.new()
+	outer.add_theme_constant_override("separation", 12)
+	p.add_child(outer)
+	outer.add_child(_lbl(title, 22, ACC))
+	var sc := ScrollContainer.new()
+	sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	outer.add_child(sc)
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 12)
-	p.add_child(v)
-	v.add_child(_lbl(title, 22, ACC))
+	v.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sc.add_child(v)
 	var rt := RichTextLabel.new()
 	rt.bbcode_enabled = true
 	rt.fit_content = true
+	rt.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
 	rt.text = body
-	rt.custom_minimum_size = Vector2(width - 40, 0)
+	rt.custom_minimum_size = Vector2(width - 52, 0)
 	rt.add_theme_font_size_override("normal_font_size", 16)
 	rt.add_theme_font_size_override("bold_font_size", 18)
+	rt.visible = body != ""
 	v.add_child(rt)
 	var h := HFlowContainer.new()
 	h.alignment = FlowContainer.ALIGNMENT_END
 	h.add_theme_constant_override("h_separation", 8)
 	h.add_theme_constant_override("v_separation", 8)
-	v.add_child(h)
+	outer.add_child(h)
+	_fit_scroll(sc, v)
 	var m := modal
 	for b in buttons:
 		var cb: Callable = b[1]
@@ -938,6 +951,17 @@ func show_dialog(title: String, body: String, buttons: Array, width := 460, paus
 				G.set_speed(was if was > 0.0 else G.speed_before_pause)
 			cb.call(), bool(b[2])))
 	return v
+
+var _dlg_panel: PanelContainer
+
+# 內容超過畫面時改成捲動，保留標題與按鈕的空間
+func _fit_scroll(sc: ScrollContainer, content: Control, reserve := 210.0) -> void:
+	await get_tree().process_frame
+	await get_tree().process_frame
+	if not is_instance_valid(sc) or not is_instance_valid(content):
+		return
+	var vp_h := root.get_viewport_rect().size.y
+	sc.custom_minimum_size.y = minf(content.get_combined_minimum_size().y, maxf(140.0, vp_h - reserve))
 
 func close_modal() -> void:
 	if _help_page >= 0 or Snd.voice_playing():
@@ -974,6 +998,14 @@ func show_expand() -> void:
 	v.add_theme_constant_override("separation", 10)
 	p.add_child(v)
 	v.add_child(_lbl("擴建", 22, ACC))
+	var esc := ScrollContainer.new()
+	esc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	v.add_child(esc)
+	var ev := VBoxContainer.new()
+	ev.add_theme_constant_override("separation", 10)
+	ev.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	esc.add_child(ev)
+	_fit_scroll(esc, ev)
 	var items: Array = []
 	if G.plots < G.PLOT_PRICES.size():
 		var price: int = G.price(G.PLOT_PRICES[G.plots])
@@ -994,7 +1026,7 @@ func show_expand() -> void:
 		items.append(["航空貨運站", "已啟用。", 0, Callable()])
 	for it in items:
 		var row := _panel(Color(0.22, 0.27, 0.36), 10, 10)
-		v.add_child(row)
+		ev.add_child(row)
 		var rh := HBoxContainer.new()
 		rh.add_theme_constant_override("separation", 12)
 		row.add_child(rh)
@@ -1003,8 +1035,8 @@ func show_expand() -> void:
 		rh.add_child(tv)
 		tv.add_child(_lbl(it[0], 17))
 		var dl := _lbl(it[1], 13, DIM)
-		dl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		dl.custom_minimum_size.x = 360
+		dl.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
+		dl.custom_minimum_size.x = 340
 		tv.add_child(dl)
 		if int(it[2]) > 0:
 			var cb: Callable = it[3]
@@ -1050,7 +1082,7 @@ func _game_over(title: String, body: String) -> void:
 	close_modal()
 	var v := show_dialog(title, body, [["重新開始", func(): main.restart("new"), true], ["回標題", func(): main.restart(""), false]], 480)
 	if v:
-		v.get_parent().add_theme_stylebox_override("panel", _sb(Color(0.3, 0.12, 0.12, 0.97), 16, 20))
+		_dlg_panel.add_theme_stylebox_override("panel", _sb(Color(0.3, 0.12, 0.12, 0.97), 16, 20))
 
 # ── 選單、說明、更新紀錄 ──
 func toggle_menu() -> void:
@@ -1116,16 +1148,27 @@ func show_help(page := 0) -> void:
 	var h := HBoxContainer.new()
 	h.add_theme_constant_override("separation", 12)
 	v.add_child(h)
+	# 分頁很多：分頁列和內容區一樣高，超出就捲動
+	var area_h := minf(430.0, maxf(160.0, root.get_viewport_rect().size.y - 230.0))
+	var tsc := ScrollContainer.new()
+	tsc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	tsc.custom_minimum_size = Vector2(146, area_h)
+	h.add_child(tsc)
 	var tabs := VBoxContainer.new()
 	tabs.add_theme_constant_override("separation", 4)
-	h.add_child(tabs)
+	tsc.add_child(tabs)
+	var sel_btn: Button = null
 	for i in Texts.HELP.size():
 		var ii := i
 		var b := _btn(Texts.HELP[i][0], func(): show_help(ii), i == page, 14)
-		b.custom_minimum_size = Vector2(130, 34)
+		b.custom_minimum_size = Vector2(130, 32)
 		tabs.add_child(b)
+		if i == page:
+			sel_btn = b
+	if sel_btn:
+		tsc.ensure_control_visible.call_deferred(sel_btn)
 	var sc := ScrollContainer.new()
-	sc.custom_minimum_size = Vector2(520, 430)
+	sc.custom_minimum_size = Vector2(520, area_h)
 	sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	h.add_child(sc)
 	var tv := VBoxContainer.new()
@@ -1133,7 +1176,7 @@ func show_help(page := 0) -> void:
 	sc.add_child(tv)
 	tv.add_child(_lbl(Texts.HELP[page][0], 19))
 	var body := _lbl(Texts.HELP[page][1], 16)
-	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
 	body.custom_minimum_size.x = 500
 	tv.add_child(body)
 	var bh := HBoxContainer.new()
@@ -1181,10 +1224,8 @@ func show_settings() -> void:
 		s.value_changed.connect(func(x): cb.call(x))
 		h.add_child(s)
 		v.add_child(h)
-		v.move_child(h, v.get_child_count() - 2)
 	var nb := _btn("下一首音樂", func(): Snd.next_track(); G.toast.emit("播放：%s" % Snd.current_track_name(), "info"), false, 15)
 	v.add_child(nb)
-	v.move_child(nb, v.get_child_count() - 2)
 
 func show_install() -> void:
 	var st := Updater.install_state()

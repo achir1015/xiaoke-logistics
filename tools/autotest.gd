@@ -78,6 +78,14 @@ func _ready() -> void:
 		main._title_spin = false
 	if args.has("help"):
 		main.hud.show_help(int(args.help))
+	if args.has("open"):
+		await get_tree().create_timer(1.2).timeout
+		match String(args.open):
+			"changelog": main.hud.show_changelog()
+			"market": main.hud.show_market()
+			"expand": main.hud.show_expand()
+			"settings": main.hud.show_settings()
+			"menu": main.hud.toggle_menu()
 	G.phone_call.connect(func(c):
 		print("[test] 來電 ", c.client, " n=", c.n)
 		if args.has("call"):
