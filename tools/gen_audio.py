@@ -208,10 +208,52 @@ def sfx():
     print("sfx done")
 
 
+def weather_sfx():
+    """天氣與災害音效：雨、風（可循環）、雷、地震、警報。"""
+    n = int(8.0 * SR)
+    t = np.arange(n) / SR
+    rain = hp(rng.standard_normal(n), 1500) * 0.25 + lp(rng.standard_normal(n), 900) * 0.15
+    drops = (rng.random(n) > 0.9985) * rng.standard_normal(n)
+    rain += hp(drops, 2500) * 0.6
+    fade = int(0.3 * SR)
+    rain[:fade] *= np.linspace(0, 1, fade)
+    rain[-fade:] *= np.linspace(1, 0, fade)
+    write_sfx("rain", rain)
+    w = lp(rng.standard_normal(n), 500)
+    gust = 0.55 + 0.45 * np.sin(2 * np.pi * 0.25 * t) * np.sin(2 * np.pi * 0.11 * t + 1.0)
+    whistle = np.sin(2 * np.pi * (420 + 120 * np.sin(2 * np.pi * 0.2 * t)) * t) * 0.03
+    wind = w * gust + whistle * gust
+    wind[:fade] *= np.linspace(0, 1, fade)
+    wind[-fade:] *= np.linspace(1, 0, fade)
+    write_sfx("wind", wind)
+    n = int(3.5 * SR)
+    t = np.arange(n) / SR
+    crack = hp(rng.standard_normal(n), 1200) * np.exp(-t * 9) * 0.7
+    rumble = lp(rng.standard_normal(n), 120) * np.exp(-t * 0.9) * (1 - np.exp(-t * 6)) * 2.5
+    write_sfx("thunder", crack + rumble)
+    n = int(6.0 * SR)
+    t = np.arange(n) / SR
+    env = np.minimum(1.0, t / 0.8) * np.exp(-np.maximum(0, t - 3.5) * 1.2)
+    rum = lp(rng.standard_normal(n), 90) * 3.0 * env
+    rattle = hp(rng.standard_normal(n), 3000) * (rng.random(n) > 0.995) * 0.8 * env
+    write_sfx("quake", rum + rattle)
+    seg = []
+    for k in range(3):
+        for f in (880, 660):
+            seg.append(tone(f, 0.28, 1.5, "square") * 0.35)
+    write_sfx("alarm", np.concatenate(seg))
+    print("weather sfx done")
+
+
 if __name__ == "__main__":
     os.makedirs(MUSIC, exist_ok=True)
     os.makedirs(SFX, exist_ok=True)
+    import sys
+    if "--weather-only" in sys.argv:
+        weather_sfx()
+        raise SystemExit
     sfx()
+    weather_sfx()
     # 調性、速度、和弦進行（級數, 大/小）
     track("morning_dock", 60, 84, [(0, "maj"), (9, "min"), (5, "maj"), (7, "maj")], 40)
     track("forklift_waltz", 57, 76, [(0, "min"), (5, "min"), (10, "maj"), (3, "maj")], 36)

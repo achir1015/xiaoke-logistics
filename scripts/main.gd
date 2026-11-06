@@ -4,6 +4,7 @@ extends Node3D
 static var pending := ""        # "" = 標題畫面、"new"、"load"
 
 var world: World
+var wfx: WeatherFX
 var cam: IsoCam
 var hud: Hud
 var build_kind := ""            # rack / cold / fragile / demolish
@@ -21,6 +22,9 @@ func _ready() -> void:
 	add_child(world)
 	cam = IsoCam.new()
 	add_child(cam)
+	wfx = WeatherFX.new()
+	add_child(wfx)
+	wfx.setup(world, cam)
 	hud = Hud.new()
 	hud.main = self
 	add_child(hud)
@@ -131,13 +135,13 @@ func _process(delta: float) -> void:
 	# 依委託派車：一趟裝不完就分批，一次一台
 	for c in G.contracts.duplicate():
 		if c.state in ["booked", "inbound"] and G.minute >= float(c.arrive) and not c.get("veh_in", false) \
-				and int(c.unloaded) < int(c.n) and G.minute >= float(c.get("next_in", 0.0)):
+				and int(c.unloaded) < int(c.n) and G.minute >= float(c.get("next_in", 0.0)) and G.transport_ok(c.get("tin", "truck")):
 			c["veh_in"] = true
 			c.state = "inbound"
 			_spawn(c, "in")
 			G.contracts_changed.emit()
 		elif c.state in ["stored", "outbound"] and G.minute >= float(c.pickup) and not c.get("veh_out", false) \
-				and int(c.loaded) < int(c.unloaded) and G.customs_released(c) and G.minute >= float(c.get("next_out", 0.0)):
+				and int(c.loaded) < int(c.unloaded) and G.customs_released(c) and G.minute >= float(c.get("next_out", 0.0)) and G.transport_ok(c.get("tout", "truck")):
 			c["veh_out"] = true
 			c.state = "outbound"
 			_spawn(c, "out")
@@ -235,7 +239,7 @@ func _try_place(screen: Vector2) -> void:
 			G.toast.emit("貨架上還有貨，清空才能拆除", "bad")
 			Snd.play("error")
 			return
-		var refund := int(G.BUILD[r.kind].price) / 2
+		var refund := G.price(int(G.BUILD[r.kind].price)) / 2
 		if world.remove_rack(r):
 			G.earn(refund, "拆除%s，退回" % G.BUILD[r.kind].name)
 			world.refresh_capacity()
@@ -247,14 +251,14 @@ func _try_place(screen: Vector2) -> void:
 		Snd.play("error")
 		return
 	var d: Dictionary = G.BUILD[build_kind]
-	if not G.spend(int(d.price)):
+	if not G.spend(G.price(int(d.price))):
 		return
 	var r = world.place_rack(build_kind, ghost_cell, build_rot)
 	world.refresh_capacity()
 	var kind := build_kind
-	G.undo_offer.emit("已建造%s　%s" % [d.name, G.fmt(int(d.price))], int(d.price), func():
+	G.undo_offer.emit("已建造%s　%s" % [d.name, G.fmt(G.price(int(d.price)))], G.price(int(d.price)), func():
 		if r in world.racks and world.remove_rack(r):
-			G.money += int(G.BUILD[kind].price)
+			G.money += G.price(int(G.BUILD[kind].price))
 			G.money_changed.emit()
 			world.refresh_capacity()
 			return true
@@ -263,17 +267,17 @@ func _try_place(screen: Vector2) -> void:
 
 # ── 購買 ──
 func buy_forklift() -> void:
-	if not G.spend(G.FORKLIFT_PRICE):
+	if not G.spend(G.price(G.FORKLIFT_PRICE)):
 		return
 	var f := _add_forklift(world.nearest_walkable(Vector2i(4, 5)))
 	world.refresh_capacity()
 	Snd.play("build")
 	cam.focus(f.position)
-	G.undo_offer.emit("已購買堆高機　%s" % G.fmt(G.FORKLIFT_PRICE), G.FORKLIFT_PRICE, func():
+	G.undo_offer.emit("已購買堆高機　%s" % G.fmt(G.price(G.FORKLIFT_PRICE)), G.price(G.FORKLIFT_PRICE), func():
 		if f.is_idle() and f in world.forklifts and world.forklifts.size() > 1:
 			world.forklifts.erase(f)
 			f.queue_free()
-			G.money += G.FORKLIFT_PRICE
+			G.money += G.price(G.FORKLIFT_PRICE)
 			G.money_changed.emit()
 			world.refresh_capacity()
 			return true
@@ -290,7 +294,7 @@ func buy_door() -> void:
 	if gi < 0:
 		G.toast.emit("所有門都開了，先買隔壁的地", "bad")
 		return
-	if not G.spend(G.DOOR_PRICE):
+	if not G.spend(G.price(G.DOOR_PRICE)):
 		return
 	G.doors.append(gi)
 	G.doors.sort()
@@ -300,7 +304,7 @@ func buy_door() -> void:
 func buy_plot() -> void:
 	if G.plots >= G.PLOT_PRICES.size():
 		return
-	var price: int = G.PLOT_PRICES[G.plots]
+	var price: int = G.price(G.PLOT_PRICES[G.plots])
 	if not G.spend(price):
 		return
 	G.plots += 1
@@ -315,7 +319,7 @@ func buy_plot() -> void:
 func buy_rail() -> void:
 	if not _door_clear("rail"):
 		return
-	if G.rail or not G.spend(G.RAIL_PRICE):
+	if G.rail or not G.spend(G.price(G.RAIL_PRICE)):
 		return
 	G.rail = true
 	_rebuild_property()
@@ -336,7 +340,7 @@ func _door_clear(what: String) -> bool:
 func buy_airport() -> void:
 	if not _door_clear("air"):
 		return
-	if G.airport or not G.spend(G.AIRPORT_PRICE):
+	if G.airport or not G.spend(G.price(G.AIRPORT_PRICE)):
 		return
 	G.airport = true
 	_rebuild_property()
@@ -348,7 +352,7 @@ func buy_airport() -> void:
 func buy_harbour() -> void:
 	if not _door_clear("harbour"):
 		return
-	if G.harbour or not G.spend(G.HARBOUR_PRICE):
+	if G.harbour or not G.spend(G.price(G.HARBOUR_PRICE)):
 		return
 	G.harbour = true
 	_rebuild_property()
@@ -364,8 +368,47 @@ func _rebuild_property() -> void:
 	G.property_changed.emit()
 	G.save_game()
 
-# ── 警方臨檢 ──
+# ── 事件（截獲歹徒、查獲夾帶）──
+var _incident_busy := false
+
+func start_incident(kind: String, target: Vector3, headline: String, suspects: int, door: Vector3, on_done: Callable) -> void:
+	if _incident_busy:
+		on_done.call()
+		return
+	_incident_busy = true
+	build_cancel()
+	hud.close_modal()
+	var resume := G.speed if G.speed > 0.0 else G.speed_before_pause
+	G.set_speed(0.0)
+	var inc := Incident.new()
+	add_child(inc)
+	inc.setup(world, cam, hud)
+	hud.cinematic(true)
+	inc.tree_exited.connect(func():
+		_incident_busy = false
+		hud.cinematic(false)
+		if not G.over:
+			G.set_speed(resume)
+		on_done.call())
+	inc.run(kind, target, headline, suspects, door)
+
+func door_point_near(p: Vector3) -> Vector3:
+	var best := Vector3(world.cell_center(Vector2i(2, World.PD - 1)).x, 0, World.FRONT_Z)
+	var bd := 1e9
+	for d in world.docks:
+		if d.kind == "truck":
+			var dp := Vector3(world.cell_center(d.cell).x, 0, World.FRONT_Z)
+			if dp.distance_to(p) < bd:
+				bd = dp.distance_to(p)
+				best = dp
+	return best
+
+# ── 警方臨檢（自己被抓）──
 func start_raid(van: Vehicle) -> void:
+	start_incident("raid", van.position, "【新聞快報】警方在小柯物流攔查可疑廂型車，特勤人員持槍包圍", 2, Vector3.INF, func():
+		G.trigger_game_over("警方臨檢，人贓俱獲", "那台廂型車的司機亮出了警徽。\n不明貨箱被當場查扣，倉庫被查封，所有財產都沒收了。\n\n你經營了 %d 天，總共收入 %s。" % [G.day(), G.fmt(int(G.stats.earned))]))
+
+func _old_raid(van: Vehicle) -> void:
 	build_cancel()
 	cam.focus(van.position, 26.0)
 	for i in 3:

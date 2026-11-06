@@ -183,6 +183,8 @@ func _drive(dt: float) -> bool:
 		sp = 6.0
 	if rev:
 		sp = 2.5
+	if kind in ["truck", "van"]:
+		sp *= G.road_factor()
 	if dist < 0.08:
 		waypoints.remove_at(0)
 		return waypoints.is_empty()
@@ -263,6 +265,12 @@ func _arrive() -> void:
 	state = "docked"
 	if kind == "van":
 		state = "decide"
+		var c := G.contract_by_id(cid)
+		if bool(c.get("reported", false)):
+			# 已經報警：警方埋伏，直接收網
+			is_cop = false
+			report_police()
+			return
 		G.set_speed(0.0)
 		get_tree().call_group("hud", "mystery_arrival", self)
 
@@ -295,7 +303,7 @@ func _docked(dm: float) -> void:
 					_give_up("等太久沒人卸貨")
 	else:
 		dock_min += dm
-		if dock_min > 180.0 and not c.mystery:
+		if dock_min > 180.0 and not c.mystery and not G.storm_exempt():
 			var pen := int(int(c.pay) * 0.05 * dm / 60.0)
 			c.late_pen = mini(int(c.late_pen) + pen, int(int(c.pay) * 0.5))
 		if transfers.is_empty():
@@ -450,6 +458,43 @@ func decide(accept: bool) -> void:
 		G.money_changed.emit()
 		G.toast.emit("對方很不爽，派人來收「損失費」%s。" % G.fmt(fine), "bad")
 	_depart()
+
+func report_police() -> void:
+	var c := G.contract_by_id(cid)
+	if is_cop:
+		G.set_speed(G.speed_before_pause)
+		G.heat = 0.0
+		G.earn(G.price(1000), "原來是警方的誘捕行動，感謝你的配合")
+		_seize(c)
+		_depart()
+		return
+	state = "raid"
+	var who: String = c.get("client", "歹徒")
+	get_tree().call_group("main", "start_incident", "intercept", position, "【新聞快報】警方接獲小柯物流檢舉，於倉庫碼頭攔截%s一夥，特勤人員持槍包圍" % who, 2, Vector3.INF, func():
+		_seize(c)
+		G.heat = 0.0
+		G.add_rating(4.0)
+		G.earn(G.price(5000), "檢舉獎金")
+		G.toast.emit("事件平息。不明貨箱全部被警方查扣，%s 一夥落網。" % who, "good")
+		world.release_dock(dock)
+		dock = null
+		world.vehicles.erase(self)
+		queue_free())
+
+func _seize(c: Dictionary) -> void:
+	if not c.is_empty():
+		G.contracts.erase(c)
+		G.contracts_changed.emit()
+	for p in world.pallets.duplicate():
+		if p.cid == cid:
+			if p.rack:
+				p.rack.slots[p.slot] = null
+			if p.dock:
+				for i in 2:
+					if p.dock.pad[i] == p:
+						p.dock.pad[i] = null
+			world.drop_pallet(p)
+	world.refresh_capacity()
 
 func _raid() -> void:
 	state = "raid"

@@ -39,6 +39,15 @@ var update_bar: PanelContainer
 var _refresh_t := 0.0
 var _list_t := 0
 var portrait_hint: PanelContainer
+var price_btns: Array = []
+var market_panel: PanelContainer
+var g_oil: Gauge
+var g_cpi: Gauge
+var wx_lbl: Label
+var wx_panel: PanelContainer
+var cine := false
+var news_bar: PanelContainer
+var news_lbl: Label
 var doc_panel: PanelContainer
 var doc_body: VBoxContainer
 var doc_toggle: Button
@@ -174,6 +183,13 @@ func _build_game_ui() -> void:
 	clock_lbl = _lbl("第 1 天 08:00", 20)
 	clock_lbl.custom_minimum_size.x = 150
 	ch.add_child(clock_lbl)
+	wx_panel = PanelContainer.new()
+	wx_panel.add_theme_stylebox_override("panel", _sb(Color(0.25, 0.45, 0.7), 8, 8))
+	wx_lbl = _lbl("晴 25°C", 15, Color.WHITE)
+	wx_panel.add_child(wx_lbl)
+	wx_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	wx_panel.tooltip_text = "天氣"
+	ch.add_child(wx_panel)
 	for s in [[0.0, "暫停"], [1.0, "1×"], [2.0, "2×"], [4.0, "4×"]]:
 		var sp: float = s[0]
 		var b := _btn(s[1], func(): G.set_speed(sp); _refresh_speed(), false, 15)
@@ -235,9 +251,17 @@ func _build_game_ui() -> void:
 	toolbar.add_child(th)
 	for k in ["rack", "cold", "fragile", "inspect"]:
 		var kk: String = k
-		th.add_child(_tool_btn("%s\n%s" % [G.BUILD[k].name, G.fmt(G.BUILD[k].price)], func(): main.build_start(kk)))
-	th.add_child(_tool_btn("堆高機\n%s" % G.fmt(G.FORKLIFT_PRICE), func(): main.build_cancel(); main.buy_forklift()))
-	th.add_child(_tool_btn("碼頭門\n%s" % G.fmt(G.DOOR_PRICE), func(): main.build_cancel(); _confirm_door()))
+		var tb := _tool_btn("", func(): main.build_start(kk))
+		price_btns.append([tb, G.BUILD[k].name, int(G.BUILD[k].price)])
+		th.add_child(tb)
+	var fb := _tool_btn("", func(): main.build_cancel(); main.buy_forklift())
+	price_btns.append([fb, "堆高機", G.FORKLIFT_PRICE])
+	th.add_child(fb)
+	var db := _tool_btn("", func(): main.build_cancel(); _confirm_door())
+	price_btns.append([db, "碼頭門", G.DOOR_PRICE])
+	th.add_child(db)
+	_refresh_prices()
+	G.market_changed.connect(_refresh_prices)
 	th.add_child(_tool_btn("拆除\n退一半", func(): main.build_start("demolish")))
 	th.add_child(_tool_btn("擴建\n地・鐵路・港口", func(): main.build_cancel(); show_expand(), true))
 	# 建造提示
@@ -314,6 +338,51 @@ func _build_game_ui() -> void:
 	dsc.add_child(doc_body)
 	G.contracts_changed.connect(_refresh_docs)
 	G.property_changed.connect(_refresh_docs)
+	# 左下角：市場行情（油價、物價）
+	market_panel = _panel(BG, 12, 6)
+	market_panel.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT)
+	market_panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	market_panel.position = Vector2(12, -10)
+	market_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	market_panel.tooltip_text = "點一下看油價與物價走勢"
+	game_box.add_child(market_panel)
+	var mh := HBoxContainer.new()
+	mh.add_theme_constant_override("separation", 2)
+	mh.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	market_panel.add_child(mh)
+	g_oil = Gauge.new()
+	g_oil.title = "國際油價"
+	g_oil.vmin = 40.0
+	g_oil.vmax = 140.0
+	mh.add_child(g_oil)
+	g_cpi = Gauge.new()
+	g_cpi.title = "物價指數"
+	g_cpi.vmin = 90.0
+	g_cpi.vmax = 140.0
+	mh.add_child(g_cpi)
+	market_panel.gui_input.connect(func(e: InputEvent):
+		if e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT:
+			Snd.play("click", 0.5)
+			show_market())
+	G.market_changed.connect(_refresh_market)
+	G.weather_changed.connect(_refresh_weather)
+	# 新聞快報
+	news_bar = _panel(Color(0.08, 0.08, 0.1, 0.95), 6, 8)
+	news_bar.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+	news_bar.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	news_bar.position.y = 74
+	news_bar.visible = false
+	news_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(news_bar)
+	var nh := HBoxContainer.new()
+	nh.add_theme_constant_override("separation", 10)
+	news_bar.add_child(nh)
+	var tag := PanelContainer.new()
+	tag.add_theme_stylebox_override("panel", _sb(Color(0.85, 0.12, 0.15), 4, 8))
+	tag.add_child(_lbl("新聞快報", 16, Color.WHITE))
+	nh.add_child(tag)
+	news_lbl = _lbl("", 17, Color.WHITE)
+	nh.add_child(news_lbl)
 	# 更新提示
 	update_bar = _panel(Color(0.2, 0.45, 0.3, 0.95), 10, 10)
 	update_bar.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
@@ -322,9 +391,13 @@ func _build_game_ui() -> void:
 	update_bar.visible = false
 	root.add_child(update_bar)
 
+func _refresh_prices() -> void:
+	for it in price_btns:
+		(it[0] as Button).text = "%s\n%s" % [it[1], G.fmt(G.price(int(it[2])))]
+
 func _tool_btn(t: String, cb: Callable, accent := false) -> Button:
 	var b := _btn(t, cb, accent, 14)
-	b.custom_minimum_size = Vector2(92, 58)
+	b.custom_minimum_size = Vector2(84, 58)
 	return b
 
 func show_game() -> void:
@@ -336,6 +409,8 @@ func show_game() -> void:
 	_refresh_list()
 	_refresh_speed()
 	_refresh_docs()
+	_refresh_market()
+	_refresh_weather()
 
 func _process(delta: float) -> void:
 	if _voice_btn and is_instance_valid(_voice_btn) and _help_page >= 0:
@@ -348,6 +423,7 @@ func _process(delta: float) -> void:
 	if _refresh_t <= 0.0:
 		_refresh_t = 0.25
 		clock_lbl.text = "第 %d 天  %s" % [G.day(), G.clock_text()]
+		_refresh_weather()
 		_refresh_speed()
 		_refresh_cap()
 		if info_panel.visible:
@@ -414,7 +490,7 @@ func _refresh_list() -> void:
 	for c in sorted:
 		list_box.add_child(_card(c))
 	var vp_h := root.get_viewport_rect().size.y
-	list_scroll.custom_minimum_size.y = minf(sorted.size() * 84.0, vp_h - 92 - 60 - 110)
+	list_scroll.custom_minimum_size.y = minf(sorted.size() * 84.0, vp_h - 92 - 60 - 150)
 	side_panel.size.y = 0
 
 func _next_time(c: Dictionary) -> float:
@@ -520,9 +596,76 @@ func _offer_dialog(c: Dictionary) -> void:
 		body += "\n\n[color=#ff8a80]你還沒有易碎品籠架！[/color]"
 	show_dialog("委託內容", body, [["簽約", func(): G.accept_offer(c), true], ["婉拒", func(): G.decline_offer(c), false], ["再想想", func(): pass, false]])
 
+func _refresh_market() -> void:
+	if g_oil == null:
+		return
+	g_oil.set_data(G.oil, G.oil_change(), "$%.1f" % G.oil)
+	g_cpi.set_data(G.cpi, G.cpi_change(), "%.1f" % G.cpi)
+
+func _refresh_weather() -> void:
+	if wx_lbl == null:
+		return
+	var k := G.weather_kind()
+	var col := {"sunny": Color(0.85, 0.55, 0.1), "cloudy": Color(0.45, 0.52, 0.6), "rain": Color(0.25, 0.4, 0.65), "typhoon": Color(0.75, 0.15, 0.2)}[k] as Color
+	var t := G.weather_text()
+	if G.typhoon_eta > 0.0:
+		t += "｜颱風警報 %d 小時後" % maxi(1, int((G.typhoon_eta - G.minute) / 60.0))
+		col = Color(0.8, 0.35, 0.1)
+	wx_lbl.text = t
+	wx_panel.add_theme_stylebox_override("panel", _sb(col, 8, 8))
+	var tip := "天氣：%s" % G.WEATHER_NAMES[k]
+	match k:
+		"rain": tip += "\n卡車開慢一點（-20%）"
+		"typhoon": tip += "\n港口封港、機場停飛、火車停駛；卡車很慢；延誤不扣錢"
+	wx_panel.tooltip_text = tip
+
+func show_market() -> void:
+	var v := show_dialog("市場行情", "", [["關閉", func(): pass, true]], 560)
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.add_theme_constant_override("h_separation", 16)
+	v.add_child(grid)
+	v.move_child(grid, 1)
+	for it in [["國際油價（美元／桶）", G.oil_hist, Color(1.0, 0.6, 0.25), "%.0f"], ["物價指數（開業時 = 100）", G.cpi_hist, Color(0.45, 0.8, 1.0), "%.1f"]]:
+		var col := VBoxContainer.new()
+		col.add_child(_lbl(it[0], 14, DIM))
+		var ch := LineChart.new()
+		ch.set_data(it[1], it[2], it[3])
+		col.add_child(ch)
+		grid.add_child(col)
+	var fx := RichTextLabel.new()
+	fx.bbcode_enabled = true
+	fx.fit_content = true
+	fx.custom_minimum_size = Vector2(520, 0)
+	var mult := G.cpi / 100.0
+	var sur := (G.oil - 80.0) / 80.0 * 20.0
+	fx.text = "目前油價 [b]$%.1f[/b]（%s%.1f%%），物價指數 [b]%.1f[/b]（%s%.2f%%）\n\n對你的影響：\n• 堆高機燃料費：每日 [b]%s[/b]（油價 × 0.5 × 台數）\n• 建造、地租、薪水、維護費 × [b]%.2f[/b]\n• 新委託報酬 × %.2f，燃油附加費 %s%.0f%%\n\n油價會受國際局勢、颱風影響；油價越高，物價也漲得越快。" % [
+		G.oil, "+" if G.oil_change() >= 0 else "", G.oil_change(), G.cpi, "+" if G.cpi_change() >= 0 else "", G.cpi_change(),
+		G.fmt(G.fuel_daily()), mult, mult, "+" if sur >= 0 else "", sur]
+	v.add_child(fx)
+	v.move_child(fx, 2)
+
+func cinematic(on: bool) -> void:
+	cine = on
+	for c in [side_panel, doc_panel, toolbar, market_panel, info_panel, hint_bar]:
+		if c:
+			c.visible = not on
+	if not on:
+		info_panel.visible = false
+		hint_bar.visible = false
+		_refresh_docs()
+
+func show_news(t: String) -> void:
+	news_lbl.text = t
+	news_bar.visible = true
+	news_bar.size.x = 0
+
+func hide_news() -> void:
+	news_bar.visible = false
+
 # ── 通關文件面板 ──
 func _refresh_docs() -> void:
-	if doc_panel == null or main == null:
+	if doc_panel == null or main == null or cine:
 		return
 	var intl: Array = []
 	for c in G.contracts:
@@ -687,7 +830,7 @@ func show_build_hint(kind: String) -> void:
 		hint_lbl.text = "拆除模式：點空的貨架拆掉，退回一半價錢"
 	else:
 		var d: Dictionary = G.BUILD[kind]
-		hint_lbl.text = "擺放%s %s・%s" % [d.name, G.fmt(int(d.price)), d.desc]
+		hint_lbl.text = "擺放%s %s・%s" % [d.name, G.fmt(G.price(int(d.price))), d.desc]
 
 func hide_build_hint() -> void:
 	hint_bar.visible = false
@@ -780,9 +923,10 @@ func show_dialog(title: String, body: String, buttons: Array, width := 460, paus
 	rt.add_theme_font_size_override("normal_font_size", 16)
 	rt.add_theme_font_size_override("bold_font_size", 18)
 	v.add_child(rt)
-	var h := HBoxContainer.new()
-	h.alignment = BoxContainer.ALIGNMENT_END
-	h.add_theme_constant_override("separation", 8)
+	var h := HFlowContainer.new()
+	h.alignment = FlowContainer.ALIGNMENT_END
+	h.add_theme_constant_override("h_separation", 8)
+	h.add_theme_constant_override("v_separation", 8)
 	v.add_child(h)
 	var m := modal
 	for b in buttons:
@@ -808,7 +952,7 @@ func _confirm_door() -> void:
 	if gi < 0:
 		show_dialog("碼頭門", "這塊地的門都開好了。到「擴建」買隔壁的地，就能再開門。", [["知道了", func(): pass, true]])
 		return
-	show_dialog("加開碼頭門？", "開啟 %d 號門，可以同時多停一台卡車。\n\n費用 [b]%s[/b]，沒有每日支出。" % [gi + 1, G.fmt(G.DOOR_PRICE)],
+	show_dialog("加開碼頭門？", "開啟 %d 號門，可以同時多停一台卡車。\n\n費用 [b]%s[/b]，沒有每日支出。" % [gi + 1, G.fmt(G.price(G.DOOR_PRICE))],
 		[["開門", func(): main.buy_door(), true], ["取消", func(): pass, false]])
 
 func show_expand() -> void:
@@ -832,20 +976,20 @@ func show_expand() -> void:
 	v.add_child(_lbl("擴建", 22, ACC))
 	var items: Array = []
 	if G.plots < G.PLOT_PRICES.size():
-		var price: int = G.PLOT_PRICES[G.plots]
+		var price: int = G.price(G.PLOT_PRICES[G.plots])
 		items.append(["買下隔壁的地（第 %d 塊）" % (G.plots + 1), "倉庫向右延伸 10 格，多 3 個碼頭門位（送一扇門）。每日地租 +%s。" % G.fmt(G.PLOT_RENT), price, func(): main.buy_plot()])
 	else:
 		items.append(["地都買齊了", "整條街都是你的倉庫了！", 0, Callable()])
 	if not G.rail:
-		items.append(["鋪設鐵路支線", "把後面那條廢棄的鐵道接回來，後牆開一扇鐵路門。火車一次運 8～12 板一般貨，報酬加成。每日 %s。" % G.fmt(G.RAIL_DAILY), G.RAIL_PRICE, func(): main.buy_rail()])
+		items.append(["鋪設鐵路支線", "把後面那條廢棄的鐵道接回來，後牆開一扇鐵路門。火車一次運 8～12 板一般貨，報酬加成。每日 %s。" % G.fmt(G.RAIL_DAILY), G.price(G.RAIL_PRICE), func(): main.buy_rail()])
 	else:
 		items.append(["鐵路支線", "已啟用。", 0, Callable()])
 	if not G.harbour:
-		items.append(["興建港口", "海邊蓋碼頭、起重機和高架輸送帶，貨輪一次 12～18 板。每日 %s。" % G.fmt(G.HARBOUR_DAILY), G.HARBOUR_PRICE, func(): main.buy_harbour()])
+		items.append(["興建港口", "海邊蓋碼頭、起重機和高架輸送帶，貨輪一次 12～18 板。每日 %s。" % G.fmt(G.HARBOUR_DAILY), G.price(G.HARBOUR_PRICE), func(): main.buy_harbour()])
 	else:
 		items.append(["港口", "已啟用。", 0, Callable()])
 	if not G.airport:
-		items.append(["興建航空貨運站", "倉庫左邊蓋跑道、停機坪、塔台和機庫，左牆開一扇空運門。貨機一次 4～8 板高價值國際貨（電子、生技、精品），報酬最高，但都要辦海關手續。每日 %s。" % G.fmt(G.AIRPORT_DAILY), G.AIRPORT_PRICE, func(): main.buy_airport()])
+		items.append(["興建航空貨運站", "倉庫左邊蓋跑道、停機坪、塔台和機庫，左牆開一扇空運門。貨機一次 4～8 板高價值國際貨（電子、生技、精品），報酬最高，但都要辦海關手續。每日 %s。" % G.fmt(G.AIRPORT_DAILY), G.price(G.AIRPORT_PRICE), func(): main.buy_airport()])
 	else:
 		items.append(["航空貨運站", "已啟用。", 0, Callable()])
 	for it in items:
@@ -877,7 +1021,13 @@ func _phone_call(c: Dictionary) -> void:
 		c.client, int(c.n), int(c.days), G.fmt(int(c.advance)), G.fmt(int(c.pay)), G.when_text(float(c.arrive))]
 	show_dialog("一通陌生來電", body, [
 		["答應", func(): G.accept_mystery(c); G.set_speed(G.speed_before_pause), true],
-		["掛掉電話", func(): G.set_speed(G.speed_before_pause); G.toast.emit("你掛掉了電話。", "info"), false]], 500)
+		["假裝答應並報警", func():
+			c["reported"] = true
+			c["advance"] = 0
+			G.accept_mystery(c)
+			G.set_speed(G.speed_before_pause)
+			G.toast.emit("你偷偷通報了警方。警方會在 %s 車子到的時候埋伏。" % G.when_text(float(c.arrive)), "info"), false],
+		["掛掉電話", func(): G.set_speed(G.speed_before_pause); G.toast.emit("你掛掉了電話。", "info"), false]], 520)
 
 func mystery_arrival(v) -> void:
 	main.cam.focus(v.global_position, 22.0)
@@ -891,6 +1041,7 @@ func _mystery_dialog(v, body: String) -> void:
 		btns.append(["觀察司機（30 分鐘）", func():
 			var clue: String = v.observe()
 			_mystery_dialog(v, "你躲在窗後觀察了一會兒……\n\n[i]%s[/i]\n\n要開門嗎？" % clue), false])
+	btns.append(["報警", func(): v.report_police(), false])
 	btns.append(["拒收", func(): v.decide(false), false])
 	show_dialog("深夜的廂型車", body, btns, 480)
 
@@ -907,7 +1058,7 @@ func toggle_menu() -> void:
 		close_modal()
 		return
 	show_dialog("選單", "第 %d 天 ・ 完成委託 %d 筆 ・ 搬運托盤 %d 板 ・ 累計收入 %s\n\n目前音樂：%s" % [G.day(), int(G.stats.contracts), int(G.stats.pallets), G.fmt(int(G.stats.earned)), Snd.current_track_name()], [
-		["遊戲說明", show_help, false], ["更新紀錄", show_changelog, false], ["設定", show_settings, false], ["建立捷徑", show_install, false],
+		["遊戲說明", show_help, false], ["更新紀錄", show_changelog, false], ["設定", show_settings, false], ["建立捷徑", show_install, false], ["市場行情", show_market, false],
 		["存檔", func(): G.save_game(); G.toast.emit("已存檔", "good"), false], ["回標題", func(): G.save_game(); main.restart(""), false],
 		["繼續", func(): pass, true]], 680, true)
 

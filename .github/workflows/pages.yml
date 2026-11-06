@@ -6,7 +6,7 @@ name: 部署線上版到 GitHub Pages
 on:
   push:
     branches: [main]
-    paths: ['docs/**', '.github/workflows/pages.yml']
+    paths: ['.github/workflows/pages.yml']
   workflow_dispatch:
 
 permissions:

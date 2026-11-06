@@ -534,6 +534,99 @@ static func tug() -> Node3D:
 		cyl(n, 0.28, 0.5, Vector3(-1.45, 0.9, z), Color(0.1, 0.1, 0.1), "z")
 	return n
 
+# ── 人物（事件用）：swat 特勤、police 警察、suspect 嫌犯、reporter 記者、camera 攝影師 ──
+static func person(kind: String) -> Node3D:
+	var n := Node3D.new()
+	var body := Color(0.15, 0.17, 0.22)
+	var legs := Color(0.12, 0.13, 0.16)
+	var skin := Color(0.93, 0.78, 0.65)
+	match kind:
+		"police":
+			body = Color(0.15, 0.27, 0.5)
+			legs = Color(0.12, 0.18, 0.32)
+		"suspect":
+			body = Color(0.2, 0.2, 0.22)
+			legs = Color(0.25, 0.27, 0.35)
+		"reporter":
+			body = Color(0.82, 0.22, 0.25)
+			legs = Color(0.2, 0.2, 0.25)
+		"camera":
+			body = Color(0.45, 0.48, 0.5)
+			legs = Color(0.28, 0.3, 0.33)
+	box(n, Vector3(0.2, 0.85, 0.24), Vector3(-0.13, 0.43, 0), legs)
+	box(n, Vector3(0.2, 0.85, 0.24), Vector3(0.13, 0.43, 0), legs)
+	box(n, Vector3(0.58, 0.72, 0.34), Vector3(0, 1.2, 0), body)
+	box(n, Vector3(0.34, 0.36, 0.32), Vector3(0, 1.77, 0), skin)
+	var arm_c := body
+	for sx in [-1.0, 1.0]:
+		var arm := Node3D.new()
+		arm.name = "ArmL" if sx < 0 else "ArmR"
+		arm.position = Vector3(sx * 0.37, 1.5, 0)
+		n.add_child(arm)
+		box(arm, Vector3(0.16, 0.66, 0.18), Vector3(0, -0.3, 0), arm_c)
+		box(arm, Vector3(0.14, 0.12, 0.15), Vector3(0, -0.66, 0), skin)
+	match kind:
+		"swat":
+			box(n, Vector3(0.62, 0.5, 0.4), Vector3(0, 1.25, 0), Color(0.08, 0.09, 0.1))
+			box(n, Vector3(0.4, 0.22, 0.4), Vector3(0, 1.98, 0), Color(0.08, 0.09, 0.1))
+			box(n, Vector3(0.3, 0.1, 0.05), Vector3(0, 1.8, 0.17), Color(0.1, 0.12, 0.15))
+			var lb := label(n, "特勤", Vector3(0, 1.32, -0.21), 30, Color(1, 0.9, 0.3), false)
+			lb.billboard = BaseMaterial3D.BILLBOARD_DISABLED
+			lb.rotation.y = PI
+			# 雙手持槍向前
+			for a in ["ArmL", "ArmR"]:
+				(n.get_node(a) as Node3D).rotation.x = -1.25
+			var gun := box(n, Vector3(0.08, 0.1, 0.8), Vector3(0.12, 1.32, 0.45), Color(0.06, 0.06, 0.07))
+			gun.name = "Gun"
+		"police":
+			box(n, Vector3(0.4, 0.12, 0.42), Vector3(0, 1.98, 0.02), Color(0.12, 0.18, 0.32))
+			box(n, Vector3(0.14, 0.1, 0.02), Vector3(0.15, 1.36, 0.18), Color(0.95, 0.8, 0.2))
+		"suspect":
+			box(n, Vector3(0.4, 0.3, 0.38), Vector3(0, 1.88, -0.02), Color(0.15, 0.15, 0.17))
+		"reporter":
+			var arm: Node3D = n.get_node("ArmR")
+			arm.rotation.x = -1.4
+			box(arm, Vector3(0.06, 0.06, 0.3), Vector3(0, -0.7, 0.12), Color(0.1, 0.1, 0.1))
+			box(arm, Vector3(0.12, 0.12, 0.12), Vector3(0, -0.7, 0.3), Color(0.3, 0.3, 0.32))
+			box(arm, Vector3(0.14, 0.08, 0.04), Vector3(0, -0.62, 0.2), Color(0.2, 0.55, 0.85))
+		"camera":
+			box(n, Vector3(0.26, 0.3, 0.6), Vector3(0.33, 1.72, 0.1), Color(0.15, 0.15, 0.17))
+			cyl(n, 0.1, 0.2, Vector3(0.33, 1.72, 0.48), Color(0.05, 0.05, 0.08), "z")
+			var lt := box(n, Vector3(0.14, 0.1, 0.06), Vector3(0.33, 1.92, 0.32), Color(1, 1, 1))
+			lt.name = "Flash"
+			lt.material_override = mat(Color(1, 1, 0.95), 4.0)
+			lt.visible = false
+			(n.get_node("ArmR") as Node3D).rotation.x = -2.6
+	return n
+
+static func hands_up(n: Node3D, up: bool) -> void:
+	for a in ["ArmL", "ArmR"]:
+		var arm: Node3D = n.get_node_or_null(a)
+		if arm:
+			arm.rotation.x = -PI + 0.2 if up else 0.0
+
+# 特勤車與新聞轉播車（以 Kenney 車輛上色再加配件）
+static func swat_truck() -> Node3D:
+	var n := vehicle_model("delivery", 6.6, Color(0.18, 0.2, 0.24))
+	var lb := label(n, "特勤", Vector3(1.35, 1.9, 0), 120, Color(1, 0.9, 0.3), false)
+	lb.billboard = BaseMaterial3D.BILLBOARD_DISABLED
+	lb.rotation.y = PI / 2
+	var lb2 := label(n, "特勤", Vector3(-1.35, 1.9, 0), 120, Color(1, 0.9, 0.3), false)
+	lb2.billboard = BaseMaterial3D.BILLBOARD_DISABLED
+	lb2.rotation.y = -PI / 2
+	return n
+
+static func news_van() -> Node3D:
+	var n := vehicle_model("van", 5.0, Color(1, 1, 1))
+	cyl(n, 0.08, 1.0, Vector3(0, 2.5, -0.8), Color(0.6, 0.6, 0.62))
+	var dish := cyl(n, 0.7, 0.12, Vector3(0, 3.0, -0.8), Color(0.92, 0.92, 0.95))
+	dish.rotation.x = 0.8
+	for sx in [-1.0, 1.0]:
+		var lb := label(n, "小柯新聞台", Vector3(sx * 1.02, 1.25, 0), 64, Color(0.85, 0.15, 0.2), false)
+		lb.billboard = BaseMaterial3D.BILLBOARD_DISABLED
+		lb.rotation.y = sx * PI / 2
+	return n
+
 # ── 卡車（Kenney Car Kit，CC0）──
 static var _veh: Dictionary = {}
 

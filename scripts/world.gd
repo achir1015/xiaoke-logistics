@@ -92,6 +92,10 @@ var lamp_mats: Array = []
 var _next_rack := 1
 var _dispatch_t := 0.0
 var _plot_signs: Array = []
+var trees: Array = []
+var weather_dim := 0.0
+var storm := 0.0
+var lightning := 0.0
 
 func _ready() -> void:
 	add_to_group("world")
@@ -223,14 +227,17 @@ func update_daylight() -> void:
 	# 0 = 深夜，1 = 正午
 	var day_f := clampf(sin((h - 6.0) / 12.0 * PI) * 1.4, 0.0, 1.0)
 	var dusk := clampf(1.0 - absf(h - 18.5) / 1.6, 0.0, 1.0) + clampf(1.0 - absf(h - 6.0) / 1.4, 0.0, 1.0)
-	sun.light_energy = lerpf(0.1, 0.78, day_f)
+	sun.light_energy = lerpf(0.1, 0.78, day_f) * (1.0 - weather_dim * 0.75) + lightning * 2.5
 	sun.light_color = Color(1, 1, 1).lerp(Color(1.0, 0.7, 0.45), clampf(dusk, 0.0, 1.0)).lerp(Color(0.6, 0.7, 1.0), 1.0 - day_f)
 	sun.rotation_degrees.y = -38.0 + (h - 12.0) * 4.0
 	var e := world_env.environment
-	e.ambient_light_energy = lerpf(0.3, 0.42, day_f)
-	e.ambient_light_color = Color(0.86, 0.88, 0.92).lerp(Color(0.45, 0.52, 0.85), 1.0 - day_f)
-	e.background_color = Color(0.42, 0.62, 0.45).lerp(Color(0.08, 0.11, 0.18), 1.0 - day_f)
-	var night := day_f < 0.35
+	e.ambient_light_energy = lerpf(0.3, 0.42, day_f) * (1.0 - weather_dim * 0.3) + lightning * 0.8
+	e.ambient_light_color = Color(0.86, 0.88, 0.92).lerp(Color(0.45, 0.52, 0.85), 1.0 - day_f).lerp(Color(0.6, 0.64, 0.7), weather_dim * 0.6)
+	e.background_color = Color(0.42, 0.62, 0.45).lerp(Color(0.08, 0.11, 0.18), 1.0 - day_f).lerp(Color(0.3, 0.33, 0.36), weather_dim * 0.6)
+	if sea_mat:
+		sea_mat.set_shader_parameter("amp", 1.0 + storm * 2.2)
+		sea_mat.set_shader_parameter("dark", weather_dim)
+	var night := day_f < 0.35 or weather_dim > 0.55
 	for m in lamp_mats:
 		(m as StandardMaterial3D).emission_energy_multiplier = 1.6 if night else 0.0
 
@@ -238,6 +245,7 @@ func update_daylight() -> void:
 func _rebuild_env() -> void:
 	for ch in env.get_children():
 		ch.queue_free()
+	trees.clear()
 	lamp_mats.clear()
 	var W := cols() * TILE
 	var grass := Color(0.42, 0.6, 0.34)
@@ -406,7 +414,7 @@ func _build_extras(W: float) -> void:
 		M.box(sg, Vector3(0.15, 2.2, 0.15), Vector3(-1.2, 1.1, 0), Color(0.4, 0.3, 0.2))
 		M.box(sg, Vector3(0.15, 2.2, 0.15), Vector3(1.2, 1.1, 0), Color(0.4, 0.3, 0.2))
 		M.box(sg, Vector3(3.2, 1.3, 0.1), Vector3(0, 2.0, 0), Color(0.95, 0.3, 0.25))
-		var price: int = G.PLOT_PRICES[G.plots]
+		var price: int = G.price(G.PLOT_PRICES[G.plots])
 		M.label(sg, "出售\n%s" % G.fmt(price), Vector3(0, 2.0, 0.07), 40, Color.WHITE, false).billboard = BaseMaterial3D.BILLBOARD_DISABLED
 
 var sea_mat: ShaderMaterial
@@ -422,6 +430,8 @@ render_mode specular_schlick_ggx;
 uniform vec3 deep : source_color = vec3(0.03, 0.2, 0.42);
 uniform vec3 shallow : source_color = vec3(0.1, 0.42, 0.62);
 uniform float shore_z = -12.0;
+uniform float amp = 1.0;
+uniform float dark = 0.0;
 varying vec3 wp;
 float wave(vec2 p, float t) {
 	return sin(p.x * 0.18 + t * 1.1) * 0.16 + sin(p.y * 0.27 - t * 0.8) * 0.12
@@ -430,10 +440,10 @@ float wave(vec2 p, float t) {
 void vertex() {
 	wp = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	float t = TIME;
-	float h = wave(wp.xz, t);
+	float h = wave(wp.xz, t) * amp;
 	float e = 0.25;
-	float hx = wave(wp.xz + vec2(e, 0.0), t) - h;
-	float hz = wave(wp.xz + vec2(0.0, e), t) - h;
+	float hx = wave(wp.xz + vec2(e, 0.0), t) * amp - h;
+	float hz = wave(wp.xz + vec2(0.0, e), t) * amp - h;
 	VERTEX.y += h;
 	NORMAL = normalize(vec3(-hx / e, 1.0, -hz / e));
 }
@@ -443,7 +453,9 @@ void fragment() {
 	// 浪頭的亮紋與靠岸白浪
 	float crest = smoothstep(0.82, 1.0, sin(wp.x * 0.35 + wp.z * 0.6 + TIME * 1.7) * 0.5 + 0.5) * 0.12;
 	float foam = smoothstep(2.2, 0.0, shore_z - wp.z) * (0.55 + 0.45 * sin(wp.x * 1.3 + TIME * 2.2));
+	crest *= amp;
 	col = mix(col, vec3(0.92, 0.96, 1.0), clamp(foam * 0.6 + crest, 0.0, 0.8));
+	col = mix(col, vec3(0.16, 0.22, 0.28), dark * 0.55);
 	ALBEDO = col;
 	ROUGHNESS = 0.12;
 	SPECULAR = 0.7;
@@ -564,8 +576,8 @@ func _bob(t: float) -> void:
 	for i in bob_nodes.size():
 		var nd: Node3D = bob_nodes[i]
 		if is_instance_valid(nd):
-			nd.position.y = -0.45 + sin(t * 1.3 + i) * 0.12
-			nd.rotation.z = sin(t * 0.9 + i * 0.7) * 0.05
+			nd.position.y = -0.45 + sin(t * 1.3 + i) * (0.12 + storm * 0.35)
+			nd.rotation.z = sin(t * 0.9 + i * 0.7) * (0.05 + storm * 0.15)
 
 func _build_airport() -> void:
 	var door_z := cell_center(AIR_CELL).z
@@ -644,12 +656,15 @@ func _scatter_trees(W: float) -> void:
 		if p.x < -2.0 and p.x > -200.0 and p.z > -3.0 and p.z < 31.0:
 			continue
 		var k := rng.randi() % scenes.size()
+		var holder := Node3D.new()
+		holder.position = p
+		env.add_child(holder)
+		trees.append(holder)
 		var t: Node3D = (scenes[k] as PackedScene).instantiate()
-		t.position = p
 		t.rotation.y = rng.randf() * TAU
 		var s := rng.randf_range(2.6, 4.2) if k < 5 else rng.randf_range(2.0, 3.0)
 		t.scale = Vector3.ONE * s
-		env.add_child(t)
+		holder.add_child(t)
 
 func _build_lamps(W: float) -> void:
 	var lm := StandardMaterial3D.new()
@@ -897,6 +912,21 @@ func _dispatch() -> void:
 			f.assign({"pallet": src, "from": acc, "to_dock": d, "to_pad": pi})
 			idle.erase(f)
 			need -= 1
+	# D) 地震掉在地上的托盤放回貨架
+	for p in pallets:
+		if idle.is_empty():
+			return
+		if p.state != "floor" or p.claimed:
+			continue
+		var f = _nearest(idle, world_to_cell(p.node.global_position))
+		var slot := _find_slot(p.cargo, f.cell())
+		var acc := floor_access(p)
+		if slot.is_empty() or acc.is_empty():
+			continue
+		slot.rack.reserved[slot.i] = true
+		p.claimed = true
+		f.assign({"pallet": p, "from": acc, "to_rack": slot.rack, "to_slot": slot.i})
+		idle.erase(f)
 	# C) 海關抽驗：搬到查驗台／搬回貨架
 	_dispatch_inspect(idle)
 
@@ -954,6 +984,41 @@ func _dispatch_inspect(idle: Array) -> void:
 				f.assign({"pallet": p, "from": acc, "to_rack": slot.rack, "to_slot": slot.i})
 				idle.erase(f)
 
+# ── 地震掉落的托盤 ──
+func fall_pallet(p: Pallet) -> bool:
+	var r: Rack = p.rack
+	var aisle := Vector2i(-99, -99)
+	for c in r.cells():
+		for d in [Vector2i(0, 1), Vector2i(0, -1), Vector2i(1, 0), Vector2i(-1, 0)]:
+			var n: Vector2i = c + d
+			if in_floor(n) and not astar.is_point_solid(n) and not reserved_cell(n):
+				aisle = n
+				break
+		if aisle.x != -99:
+			break
+	if aisle.x == -99:
+		return false
+	r.slots[p.slot] = null
+	p.rack = null
+	p.slot = -1
+	p.state = "floor"
+	var to := cell_center(aisle) + Vector3(randf_range(-0.4, 0.4), 0, randf_range(-0.4, 0.4))
+	var tw := create_tween()
+	tw.tween_property(p.node, "global_position", to, 0.5).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	tw.parallel().tween_property(p.node, "rotation", Vector3(randf_range(-0.25, 0.25), randf_range(0, TAU), randf_range(-0.25, 0.25)), 0.5)
+	refresh_capacity()
+	return true
+
+func floor_access(p: Pallet) -> Dictionary:
+	var pos: Vector3 = p.node.global_position
+	var c := world_to_cell(pos)
+	for d in [Vector2i(0, 1), Vector2i(0, -1), Vector2i(1, 0), Vector2i(-1, 0)]:
+		var n: Vector2i = c + d
+		if in_floor(n) and not astar.is_point_solid(n):
+			var face := (cell_center(c) - cell_center(n)).normalized()
+			return {"cell": n, "point": Vector3(pos.x, 0, pos.z) - face * 1.4, "face": face, "h": 0.0}
+	return {}
+
 func _free_table_slot() -> Dictionary:
 	for r in racks:
 		if r.kind != "inspect":
@@ -991,6 +1056,38 @@ func _on_table(cid: int) -> int:
 			n += 1
 	return n
 
+func _contraband_found(c: Dictionary) -> void:
+	var cb: Array = G.CONTRABAND[int(c.contraband)]
+	var cid: int = int(c.id)
+	var table_pos := Vector3.ZERO
+	for p in pallets:
+		if p.cid == cid and p.state == "rack" and p.rack.kind == "inspect":
+			table_pos = p.node.global_position
+			table_pos.y = 0.0
+			break
+	if table_pos == Vector3.ZERO:
+		table_pos = cell_center(Vector2i(4, 4))
+	G.toast.emit("海關開箱發現%s！立刻通報警方。" % cb[1], "bad")
+	Snd.play("alarm")
+	var door: Vector3 = get_tree().get_first_node_in_group("main").door_point_near(table_pos)
+	get_tree().call_group("main", "start_incident", "contraband", table_pos + Vector3(0, 0, 1.6),
+		"【新聞快報】海關在小柯物流查獲%s，警方特勤人員到場逮捕%s押貨人員" % [cb[0], c.client], 2, door, func():
+			for p in pallets.duplicate():
+				if p.cid == cid:
+					if p.rack:
+						p.rack.slots[p.slot] = null
+					if p.dock:
+						for i in 2:
+							if p.dock.pad[i] == p:
+								p.dock.pad[i] = null
+					drop_pallet(p)
+			G.contracts.erase(c)
+			G.contracts_changed.emit()
+			refresh_capacity()
+			G.add_rating(3.0)
+			G.earn(G.price(3000), "協助查緝獎金")
+			G.toast.emit("事件平息。%s 的貨全部被查扣，這筆委託取消。" % c.client, "good"))
+
 # ── 海關流程 ──
 func _customs_tick(dm: float) -> void:
 	if dm <= 0.0:
@@ -1022,6 +1119,8 @@ func _customs_tick(dm: float) -> void:
 				if G.minute >= float(cu.t):
 					var r := G.rng.randf()
 					var c3 := 0.15 + (0.08 if c.cargo == "cold" else 0.0)
+					if c.has("contraband"):
+						c3 = 0.75     # 海關風險管理：可疑貨多半會被抽驗
 					var cls := "C1" if r > 0.27 + c3 else ("C3" if r < c3 else "C2")
 					if G.force_cls != "":
 						cls = G.force_cls
@@ -1061,16 +1160,22 @@ func _customs_tick(dm: float) -> void:
 					G.toast.emit("海關人員開始查驗 %s 的貨。" % c.client, "info")
 			"inspecting":
 				if G.minute >= float(cu.t):
-					cu.stage = "inspect_return"
-					changed = true
-					G.toast.emit("查驗完成，%s 的貨沒有問題。" % c.client, "good")
+					if c.has("contraband") and not bool(cu.get("caught", false)):
+						cu.caught = true
+						cu.stage = "seized"
+						changed = true
+						_contraband_found(c)
+					else:
+						cu.stage = "inspect_return"
+						changed = true
+						G.toast.emit("查驗完成，%s 的貨沒有問題。" % c.client, "good")
 			"inspect_return":
 				if _on_table(cid) == 0:
 					cu.stage = "released"
 					changed = true
 					G.toast.emit("%s：海關已放行！" % c.client, "good")
 		# 卡在我方（缺文件、沒查驗台）超過取貨時間 2 小時：遲交扣款
-		if cu.stage in ["docs", "inspect_move"] and G.minute > float(c.pickup) + 120.0:
+		if cu.stage in ["docs", "inspect_move"] and G.minute > float(c.pickup) + 120.0 and not G.storm_exempt():
 			var pen := int(int(c.pay) * 0.05 * dm / 60.0)
 			c.late_pen = mini(int(c.late_pen) + pen, int(int(c.pay) * 0.5))
 	for r in racks:
@@ -1150,7 +1255,7 @@ func write_snapshot() -> void:
 	# 在路上的托盤：入庫中的視為已入庫、出庫中的放回貨架
 	var floating: Array = []
 	for p in pallets:
-		if p.state in ["pad_in", "pad_out", "fork"]:
+		if p.state in ["pad_in", "pad_out", "fork", "floor"]:
 			floating.append([p.cid, p.cargo])
 	G.world_snapshot = {
 		"racks": rs, "upkeep_items": items, "forklifts": forklifts.size(),

@@ -11,8 +11,12 @@ signal phone_call(c: Dictionary)
 signal game_over(title: String, body: String)
 signal day_started(day: int, report: String)
 signal property_changed
+signal weather_changed
+signal market_changed
+signal quake(mag: float)
+signal incident(kind: String, data: Dictionary)
 
-const APP_VERSION := "1.1.0"
+const APP_VERSION := "1.2.0"
 const SAVE_PATH := "user://save.json"
 const MIN_PER_SEC := 5.0          # 1× 時，每現實秒 = 5 遊戲分鐘
 const START_MONEY := 20000
@@ -60,8 +64,14 @@ const CLIENTS := [
 const RAIL_CLIENTS := ["鐵道聯運", "南北快線貨運", "穀倉合作社", "鋼鐵大道"]
 const SHIP_CLIENTS := ["遠洋貿易", "藍鯨航運", "港都國際", "七海進出口"]
 const AIR_CLIENTS := ["雲翔航空貨運", "飛鳥快遞", "晶片之星科技", "極光生技", "環球精品"]
+const WEATHER_NAMES := {"sunny": "晴", "cloudy": "多雲", "rain": "雨天", "typhoon": "颱風"}
+const CONTRABAND := [
+	["毒品", "藏在貨箱夾層裡的毒品"], ["違禁品", "申報不實的管制違禁品"], ["非法槍枝", "拆解藏在零件裡的非法槍枝與彈藥"],
+]
+const OIL_NEWS_UP := ["中東局勢緊張，國際油價大漲", "產油國宣布減產，油價走高", "煉油廠意外停工，油價上揚", "寒流來襲需求增加，油價上漲"]
+const OIL_NEWS_DOWN := ["主要產油國增產，油價下跌", "全球需求放緩，油價走跌", "庫存增加超乎預期，油價回落", "減產協議破局，油價重挫"]
 const STAGE_NAMES := {"docs": "等待文件", "declared": "報關申報中", "review": "C2 書面審核中", "inspect_move": "C3 抽驗：搬到查驗台",
-	"inspecting": "C3 海關查驗中", "inspect_return": "C3 查驗完成：搬回貨架", "released": "已放行"}
+	"inspecting": "C3 海關查驗中", "inspect_return": "C3 查驗完成：搬回貨架", "released": "已放行", "seized": "查獲違禁品"}
 const MOB_NAMES := ["老周", "阿彪", "龍哥", "黑皮"]
 
 # ── 狀態 ──
@@ -95,6 +105,17 @@ var _neg_days: int = 0
 var world_snapshot: Dictionary = {}   # 由 World 填寫，存檔用
 var force_call := false               # 測試用
 var force_cls := ""                   # 測試用：C1／C2／C3
+var force_contraband := false         # 測試用
+# 天氣、地震
+var weather := {"kind": "sunny", "until": 720.0}
+var typhoon_eta := -1.0
+var last_typhoon := -99999.0
+var last_quake := -99999.0
+# 市場：國際油價（美元／桶）與物價指數
+var oil := 78.0
+var cpi := 100.0
+var oil_hist: Array = []
+var cpi_hist: Array = []
 
 func _ready() -> void:
 	rng.randomize()
@@ -150,6 +171,110 @@ func fmt(n: int) -> String:
 		s = s.substr(0, s.length() - 3)
 	return ("-$" if neg else "$") + s + out
 
+# ── 物價與油價 ──
+func price(base: int) -> int:
+	return int(round(base * cpi / 100.0 / 10.0) * 10)
+
+func fuel_daily() -> int:
+	return int(round(int(world_snapshot.get("forklifts", 1)) * oil * 0.5))
+
+func oil_change() -> float:
+	if oil_hist.size() < 2:
+		return 0.0
+	return (oil / float(oil_hist[oil_hist.size() - 2]) - 1.0) * 100.0
+
+func cpi_change() -> float:
+	if cpi_hist.size() < 2:
+		return 0.0
+	return (cpi / float(cpi_hist[cpi_hist.size() - 2]) - 1.0) * 100.0
+
+func _market_day() -> void:
+	var rnd := rng.randfn(0.0, 0.025)
+	oil = oil * exp(rnd) + (80.0 - oil) * 0.05
+	if weather.kind == "typhoon":
+		oil *= 1.02
+	if rng.randf() < 0.1:
+		var up := rng.randf() < 0.5
+		var shock := rng.randf_range(0.07, 0.18)
+		oil *= (1.0 + shock) if up else (1.0 - shock)
+		var news: Array = OIL_NEWS_UP if up else OIL_NEWS_DOWN
+		toast.emit("【財經】%s（%s%.1f%%）" % [news[rng.randi() % news.size()], "+" if up else "-", shock * 100.0], "bad" if up else "good")
+	oil = clampf(oil, 35.0, 150.0)
+	cpi *= 1.0 + 0.0006 + (oil - 80.0) / 80.0 * 0.0025 + rng.randfn(0.0, 0.0012)
+	cpi = clampf(cpi, 90.0, 200.0)
+	oil_hist.append(snappedf(oil, 0.1))
+	cpi_hist.append(snappedf(cpi, 0.01))
+	while oil_hist.size() > 30:
+		oil_hist.pop_front()
+	while cpi_hist.size() > 30:
+		cpi_hist.pop_front()
+	market_changed.emit()
+
+# ── 天氣 ──
+func weather_kind() -> String:
+	return weather.kind
+
+func weather_text() -> String:
+	var t: String = WEATHER_NAMES[weather.kind]
+	return "%s %d°C" % [t, temperature()]
+
+func temperature() -> int:
+	var h := hour()
+	var base := 25.0 + 5.0 * sin((h - 9.0) / 24.0 * TAU)
+	match weather.kind:
+		"cloudy": base -= 1.5
+		"rain": base -= 3.0
+		"typhoon": base -= 2.5
+	return int(round(base))
+
+func transport_ok(kind: String) -> bool:
+	if weather.kind == "typhoon":
+		return not (kind in ["ship", "air", "rail"])
+	return true
+
+func road_factor() -> float:
+	match weather.kind:
+		"rain": return 0.8
+		"typhoon": return 0.55
+	return 1.0
+
+func storm_exempt() -> bool:
+	return weather.kind == "typhoon"
+
+func _weather_tick() -> void:
+	if typhoon_eta > 0.0 and minute >= typhoon_eta:
+		typhoon_eta = -1.0
+		last_typhoon = minute
+		weather = {"kind": "typhoon", "until": minute + rng.randf_range(720.0, 1200.0)}
+		toast.emit("颱風登陸！港口封港、機場停飛、火車停駛，延誤不會扣錢。卡車行駛變慢。", "bad")
+		weather_changed.emit()
+		return
+	if minute < float(weather.until):
+		return
+	var was: String = weather.kind
+	var r := rng.randf()
+	var k := "sunny" if r < 0.5 else ("cloudy" if r < 0.78 else "rain")
+	if was == "typhoon":
+		k = "cloudy"
+		toast.emit("颱風遠離，港口、機場和鐵路恢復作業。", "good")
+	weather = {"kind": k, "until": minute + rng.randf_range(360.0, 1080.0)}
+	# 颱風警報（至少相隔 4 天）
+	if typhoon_eta < 0.0 and k != "typhoon" and day() >= 3 and minute - last_typhoon > 4 * 1440.0 and rng.randf() < 0.12:
+		typhoon_eta = minute + rng.randf_range(600.0, 900.0)
+		toast.emit("【颱風警報】颱風預計 %s 登陸，請提前安排船班和班機！" % when_text(typhoon_eta), "bad")
+		Snd.play("alarm")
+	if k != was:
+		weather_changed.emit()
+
+func _quake_tick(dm: float) -> void:
+	if day() < 2 or minute - last_quake < 1440.0 * 1.5:
+		return
+	if rng.randf() > 0.00012 * dm:
+		return
+	last_quake = minute
+	var mag := snappedf(3.8 + pow(rng.randf(), 1.8) * 3.0, 0.1)
+	quake.emit(mag)
+
 # ── 金錢 ──
 func can_afford(p: int) -> bool:
 	return money >= p
@@ -183,6 +308,9 @@ func add_rating(d: float) -> void:
 		toast.emit("評價降到 %d 星……" % stars(), "bad")
 
 func daily_cost() -> int:
+	return int(round(_base_daily() * cpi / 100.0)) + fuel_daily()
+
+func _base_daily() -> int:
 	var c := PLOT_RENT * plots
 	if rail:
 		c += RAIL_DAILY
@@ -225,6 +353,8 @@ func _process(delta: float) -> void:
 		offers_changed.emit()
 	# 神秘來電
 	_maybe_call(dm)
+	_weather_tick()
+	_quake_tick(dm)
 	# 自動存檔（每 3 遊戲小時）
 	_autosave_min += dm
 	if _autosave_min > 180.0:
@@ -232,6 +362,7 @@ func _process(delta: float) -> void:
 		save_game()
 
 func _new_day() -> void:
+	_market_day()
 	var cost := daily_cost()
 	money -= cost
 	yesterday = today_income - cost
@@ -331,6 +462,7 @@ func _make_offer() -> Dictionary:
 		pay *= 1.15
 	if intl != "":
 		pay *= 1.3 if tr == "ship" else 1.6     # 報關服務費；空運貨價值高
+	pay *= cpi / 100.0 * (1.0 + (oil - 80.0) / 80.0 * 0.2)   # 物價與燃油附加費
 	var c := {
 		"id": next_id, "client": client, "transport": tr, "tin": tin, "tout": tout, "intl": intl,
 		"cargo": cargo, "n": n, "arrive": arrive, "pickup": pickup, "cross": cross, "days": days,
@@ -340,6 +472,9 @@ func _make_offer() -> Dictionary:
 	}
 	if intl != "":
 		c.customs = _make_customs(c)
+		# 少數國際貨夾帶違禁物（只有被查驗才會發現）
+		if rng.randf() < 0.07 or force_contraband:
+			c["contraband"] = rng.randi() % CONTRABAND.size()
 	next_id += 1
 	return c
 
@@ -522,7 +657,8 @@ func _maybe_call(dm: float) -> void:
 func accept_mystery(c: Dictionary) -> void:
 	c.state = "booked"
 	contracts.append(c)
-	earn(int(c.advance), "收到一筆「訂金」")
+	if int(c.advance) > 0:
+		earn(int(c.advance), "收到一筆「訂金」")
 	contracts_changed.emit()
 
 func cop_chance() -> float:
@@ -551,6 +687,14 @@ func new_game() -> void:
 	rail = false
 	harbour = false
 	airport = false
+	weather = {"kind": "sunny", "until": minute + 600.0}
+	typhoon_eta = -1.0
+	last_typhoon = -99999.0
+	last_quake = -99999.0
+	oil = 78.0
+	cpi = 100.0
+	oil_hist = [76.4, 77.1, 76.8, 78.0]
+	cpi_hist = [99.7, 99.8, 99.9, 100.0]
 	heat = 0.0
 	mob_deals = 0
 	yesterday = 0
@@ -590,7 +734,8 @@ func save_game() -> void:
 	var data := {
 		"v": APP_VERSION, "money": money, "minute": minute, "rating": rating, "offers": offers,
 		"contracts": contracts, "next_id": next_id, "plots": plots, "doors": doors, "rail": rail,
-		"harbour": harbour, "airport": airport, "heat": heat, "mob_deals": mob_deals, "yesterday": yesterday,
+		"harbour": harbour, "airport": airport, "heat": heat, "weather": weather, "typhoon_eta": typhoon_eta,
+		"last_typhoon": last_typhoon, "last_quake": last_quake, "oil": oil, "cpi": cpi, "oil_hist": oil_hist, "cpi_hist": cpi_hist, "mob_deals": mob_deals, "yesterday": yesterday,
 		"today_income": today_income, "last_call_min": last_call_min, "stats": stats,
 		"world": world_snapshot, "tutorial_done": tutorial_done, "neg_days": _neg_days,
 	}
@@ -624,6 +769,15 @@ func load_game() -> bool:
 	rail = bool(d.rail)
 	harbour = bool(d.harbour)
 	airport = bool(d.get("airport", false))
+	weather = d.get("weather", {"kind": "sunny", "until": minute + 600.0})
+	weather.until = float(weather.until)
+	typhoon_eta = float(d.get("typhoon_eta", -1.0))
+	last_typhoon = float(d.get("last_typhoon", -99999.0))
+	last_quake = float(d.get("last_quake", -99999.0))
+	oil = float(d.get("oil", 78.0))
+	cpi = float(d.get("cpi", 100.0))
+	oil_hist = d.get("oil_hist", [oil])
+	cpi_hist = d.get("cpi_hist", [cpi])
 	heat = float(d.heat)
 	mob_deals = int(d.mob_deals)
 	yesterday = int(d.yesterday)

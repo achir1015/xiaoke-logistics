@@ -7,7 +7,7 @@ config_version=5
 
 config/name="小柯機器人物流大亨"
 config/description="舒適的倉庫經營模擬：從小倉庫做到物流帝國"
-config/version="1.1.0"
+config/version="1.2.0"
 run/main_scene="res://scenes/main.tscn"
 config/features=PackedStringArray("4.7", "GL Compatibility")
 config/icon="res://icon.svg"

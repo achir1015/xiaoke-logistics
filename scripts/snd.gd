@@ -3,7 +3,7 @@ extends Node
 
 const TRACKS := ["morning_dock", "forklift_waltz", "night_shift"]
 const TRACK_NAMES := {"morning_dock": "早班碼頭", "forklift_waltz": "堆高機圓舞曲", "night_shift": "夜班慢板"}
-const SFX := ["build", "cash", "ding", "sign", "error", "phone", "siren", "beep", "fanfare", "click", "horn"]
+const SFX := ["build", "cash", "ding", "sign", "error", "phone", "siren", "beep", "fanfare", "click", "horn", "rain", "wind", "thunder", "quake", "alarm"]
 
 var music := AudioStreamPlayer.new()
 var voice := AudioStreamPlayer.new()
@@ -77,6 +77,34 @@ func current_track_name() -> String:
 	if _track < 0:
 		return ""
 	return TRACK_NAMES[TRACKS[_track]]
+
+# ── 環境音（雨、風，循環）──
+var _amb: Dictionary = {}
+
+func ambient(name: String, vol := 1.0) -> void:
+	if not streams.has(name):
+		return
+	var ap: AudioStreamPlayer = _amb.get(name, null)
+	if ap == null:
+		ap = AudioStreamPlayer.new()
+		add_child(ap)
+		var st: AudioStream = streams[name]
+		if st is AudioStreamWAV:
+			var w: AudioStreamWAV = (st as AudioStreamWAV).duplicate()
+			w.loop_mode = AudioStreamWAV.LOOP_FORWARD
+			w.loop_begin = 0
+			w.loop_end = int(w.get_length() * w.mix_rate) - 1
+			st = w
+		ap.stream = st
+		_amb[name] = ap
+	ap.volume_db = linear_to_db(maxf(sfx_vol * vol, 0.001)) - 4.0
+	if not ap.playing:
+		ap.play()
+
+func stop_ambient(name: String) -> void:
+	var ap: AudioStreamPlayer = _amb.get(name, null)
+	if ap and ap.playing:
+		ap.stop()
 
 # ── 語音 ──
 func play_voice(name: String) -> bool:

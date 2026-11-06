@@ -39,6 +39,13 @@ func _ready() -> void:
 							main.world.place_rack(["rack", "cold", "fragile"][i], c, 1)
 		main.world.refresh_capacity()
 		G.set_speed(float(args.get("speed", "1")))
+		if args.has("weather"):
+			G.weather = {"kind": String(args.weather), "until": G.minute + 3000.0}
+			G.weather_changed.emit()
+		if args.has("contraband"):
+			G.force_contraband = true
+		if args.has("quake"):
+			get_tree().create_timer(float(args.get("quakeat", "4"))).timeout.connect(func(): G.quake.emit(float(args.quake)))
 		if args.has("cls"):
 			G.force_cls = String(args.cls)
 		if args.has("intl"):
@@ -76,8 +83,18 @@ func _ready() -> void:
 		if args.has("call"):
 			await get_tree().create_timer(1.5).timeout
 			main.hud.close_modal()
+			if args.has("report"):
+				c["reported"] = true
+				c["advance"] = 0
 			G.accept_mystery(c)
 			G.set_speed(float(args.get("speed", "1")))
+		if args.has("weather"):
+			G.weather = {"kind": String(args.weather), "until": G.minute + 3000.0}
+			G.weather_changed.emit()
+		if args.has("contraband"):
+			G.force_contraband = true
+		if args.has("quake"):
+			get_tree().create_timer(float(args.get("quakeat", "4"))).timeout.connect(func(): G.quake.emit(float(args.quake)))
 		if args.has("cls"):
 			G.force_cls = String(args.cls)
 		if args.has("intl"):
@@ -105,7 +122,10 @@ func _process(delta: float) -> void:
 				v.is_cop = args.cop == "1"
 				print("[test] 廂型車到了 cop=", v.is_cop)
 				main.hud.close_modal()
-				v.decide(true)
+				if args.has("report"):
+					v.report_police()
+				else:
+					v.decide(true)
 	if _shot_i < shots.size() and t >= float(shots[_shot_i]):
 		var out := String(args.get("out", "user://"))
 		var img := get_viewport().get_texture().get_image()
