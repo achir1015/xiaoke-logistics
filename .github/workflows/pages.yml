@@ -1,0 +1,43 @@
+name: 部署線上版到 GitHub Pages
+
+# 線上版（Godot Web 匯出）放在最新 Release 的 xiaoke-logistics-web.zip，部署時解壓到網站根目錄，
+# 再放上 docs/ 裡的 version.json（遊戲用它檢查新版本）。
+# 發佈新 Release 後要手動觸發一次（workflow_dispatch）。
+on:
+  push:
+    branches: [main]
+    paths: ['docs/**', '.github/workflows/pages.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: 組合網站：線上版 ＋ version.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p _site
+          if gh release download --repo "${{ github.repository }}" --pattern xiaoke-logistics-web.zip --dir /tmp; then
+            unzip -q -o /tmp/xiaoke-logistics-web.zip -d _site
+          fi
+          cp docs/version.json _site/version.json
+          du -sh _site; ls _site
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: _site }
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,9 @@
+# Godot
+.godot/
+*.translation
+export_credentials.cfg
+# 簽章金鑰與建置輸出不進版控
+*.jks
+*.keystore
+/build/
+/tests/out/

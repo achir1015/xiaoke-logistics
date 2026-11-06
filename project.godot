@@ -1,0 +1,43 @@
+; Engine configuration file.
+; 小柯機器人物流大亨
+
+config_version=5
+
+[application]
+
+config/name="小柯機器人物流大亨"
+config/description="舒適的倉庫經營模擬：從小倉庫做到物流帝國"
+config/version="1.0.0"
+run/main_scene="res://scenes/main.tscn"
+config/features=PackedStringArray("4.7", "GL Compatibility")
+config/icon="res://icon.svg"
+boot_splash/bg_color=Color(0.09, 0.11, 0.16, 1)
+boot_splash/show_image=false
+config/quit_on_go_back=false
+
+[autoload]
+
+G="*res://scripts/g.gd"
+Snd="*res://scripts/snd.gd"
+Updater="*res://scripts/updater.gd"
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=720
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+window/handheld/orientation=4
+
+[gui]
+
+theme/custom_font="res://assets/fonts/NotoSansTC.ttf"
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+textures/vram_compression/import_etc2_astc=true
+anti_aliasing/quality/msaa_3d=1
+lights_and_shadows/directional_shadow/size=2048
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality=1
