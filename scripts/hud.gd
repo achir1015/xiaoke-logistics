@@ -39,6 +39,11 @@ var update_bar: PanelContainer
 var _refresh_t := 0.0
 var _list_t := 0
 var portrait_hint: PanelContainer
+var doc_panel: PanelContainer
+var doc_body: VBoxContainer
+var doc_toggle: Button
+var doc_open := true
+var doc_sel := -1
 
 func _ready() -> void:
 	layer = 5
@@ -228,7 +233,7 @@ func _build_game_ui() -> void:
 	var th := HBoxContainer.new()
 	th.add_theme_constant_override("separation", 6)
 	toolbar.add_child(th)
-	for k in ["rack", "cold", "fragile"]:
+	for k in ["rack", "cold", "fragile", "inspect"]:
 		var kk: String = k
 		th.add_child(_tool_btn("%s\n%s" % [G.BUILD[k].name, G.fmt(G.BUILD[k].price)], func(): main.build_start(kk)))
 	th.add_child(_tool_btn("堆高機\n%s" % G.fmt(G.FORKLIFT_PRICE), func(): main.build_cancel(); main.buy_forklift()))
@@ -262,9 +267,10 @@ func _build_game_ui() -> void:
 	game_box.add_child(toast_box)
 	# 右側資訊
 	info_panel = _panel(BG, 12, 12)
-	info_panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER_RIGHT)
+	info_panel.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT)
 	info_panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
-	info_panel.position.x = -12
+	info_panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	info_panel.position = Vector2(-12, -86)
 	info_panel.custom_minimum_size = Vector2(260, 0)
 	info_panel.visible = false
 	game_box.add_child(info_panel)
@@ -278,6 +284,36 @@ func _build_game_ui() -> void:
 	info_lbl.add_theme_font_size_override("bold_font_size", 17)
 	iv.add_child(info_lbl)
 	iv.add_child(_btn("關閉", hide_info, false, 14))
+	# 右側：通關文件
+	doc_panel = _panel(BG, 12, 10)
+	doc_panel.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+	doc_panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	doc_panel.position = Vector2(-12, 92)
+	doc_panel.custom_minimum_size = Vector2(310, 0)
+	doc_panel.visible = false
+	game_box.add_child(doc_panel)
+	var dv := VBoxContainer.new()
+	dv.add_theme_constant_override("separation", 6)
+	doc_panel.add_child(dv)
+	var dh := HBoxContainer.new()
+	dv.add_child(dh)
+	var dt := _lbl("通關文件", 17, ACC)
+	dt.add_theme_font_override("font", M.font_bold)
+	dt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	dh.add_child(dt)
+	doc_toggle = _btn("收起", func(): doc_open = not doc_open; _refresh_docs(), false, 13)
+	doc_toggle.custom_minimum_size = Vector2(56, 30)
+	dh.add_child(doc_toggle)
+	var dsc := ScrollContainer.new()
+	dsc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	dsc.custom_minimum_size = Vector2(296, 0)
+	dv.add_child(dsc)
+	doc_body = VBoxContainer.new()
+	doc_body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	doc_body.add_theme_constant_override("separation", 4)
+	dsc.add_child(doc_body)
+	G.contracts_changed.connect(_refresh_docs)
+	G.property_changed.connect(_refresh_docs)
 	# 更新提示
 	update_bar = _panel(Color(0.2, 0.45, 0.3, 0.95), 10, 10)
 	update_bar.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
@@ -299,8 +335,13 @@ func show_game() -> void:
 	_refresh_top()
 	_refresh_list()
 	_refresh_speed()
+	_refresh_docs()
 
 func _process(delta: float) -> void:
+	if _voice_btn and is_instance_valid(_voice_btn) and _help_page >= 0:
+		var want := _voice_label()
+		if _voice_btn.text != want:
+			_voice_btn.text = want
 	if not game_box.visible:
 		return
 	_refresh_t -= delta
@@ -316,6 +357,7 @@ func _process(delta: float) -> void:
 			_list_t = 4
 			if not showing_offers:
 				_refresh_list()
+			_refresh_docs()
 
 func _refresh_speed() -> void:
 	for s in speed_btns:
@@ -399,7 +441,8 @@ func _card(c: Dictionary) -> Control:
 	h.add_child(nm)
 	h.add_child(_lbl(G.fmt(int(c.pay)), 15, Color(0.15, 0.5, 0.25) if not c.mystery else ACC))
 	var kind_txt := "轉運" if c.cross else ("存 %d 天" % int(c.days))
-	v.add_child(_lbl("%s・%s %d 板・%s" % [G.TRANSPORT[c.transport], G.CARGO[c.cargo].name, int(c.n), kind_txt], 13, dark.lerp(Color(0.5, 0.5, 0.5), 0.3)))
+	var how := G.intl_label(c) if c.get("intl", "") != "" else G.leg_text(c)
+	v.add_child(_lbl("%s・%s %d 板・%s" % [how, G.CARGO[c.cargo].name, int(c.n), kind_txt], 13, dark.lerp(Color(0.5, 0.5, 0.5), 0.3)))
 	var line3 := ""
 	var tag := []
 	match c.state:
@@ -416,6 +459,10 @@ func _card(c: Dictionary) -> Control:
 			line3 = "出貨中 %d/%d" % [int(c.loaded), int(c.unloaded)]
 			if int(c.late_pen) > 0:
 				line3 += "（遲交扣 %s）" % G.fmt(int(c.late_pen))
+	if c.state != "offer" and not c.get("customs", {}).is_empty():
+		var ct := G.customs_text(c)
+		var ck := "good" if c.customs.stage == "released" else ("warn" if G.missing_docs(c) > 0 or c.customs.stage == "inspect_move" else "info")
+		tag = [ct, ck]
 	var h3 := HBoxContainer.new()
 	h3.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	v.add_child(h3)
@@ -423,7 +470,7 @@ func _card(c: Dictionary) -> Control:
 	l3.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	h3.add_child(l3)
 	if not tag.is_empty():
-		var col: Color = GOOD.darkened(0.3) if tag[1] == "good" else (Color(0.75, 0.5, 0.0) if tag[1] == "warn" else Color(0.8, 0.2, 0.15))
+		var col: Color = GOOD.darkened(0.3) if tag[1] == "good" else (Color(0.75, 0.5, 0.0) if tag[1] == "warn" else (Color(0.2, 0.4, 0.75) if tag[1] == "info" else Color(0.8, 0.2, 0.15)))
 		h3.add_child(_lbl(tag[0], 13, col))
 	p.gui_input.connect(func(e: InputEvent):
 		if e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT:
@@ -431,6 +478,10 @@ func _card(c: Dictionary) -> Control:
 			if c.state == "offer":
 				_offer_dialog(c)
 			else:
+				if not c.get("customs", {}).is_empty():
+					doc_sel = int(c.id)
+					doc_open = true
+					_refresh_docs()
 				_focus_contract(c))
 	return p
 
@@ -451,11 +502,137 @@ func _offer_dialog(c: Dictionary) -> void:
 	var body := "[b]%s[/b]\n\n運輸：%s\n貨物：%s × %d 板\n抵達：%s\n取貨：%s\n方式：%s\n\n報酬：[color=#7fe08a][b]%s[/b][/color]（出貨完成時入帳）\n空位：%s（%s 空位 %d）" % [
 		c.client, G.TRANSPORT[c.transport], G.CARGO[c.cargo].name, int(c.n), G.when_text(float(c.arrive)), G.when_text(float(c.pickup)),
 		kind_txt, G.fmt(int(c.pay)), fit[0], G.CARGO[c.cargo].name, maxi(G.free_slots(c.cargo), 0)]
+	if c.get("tin", "truck") != c.get("tout", "truck"):
+		var trips_in := ceili(float(c.n) / float(G.CAP[c.tin]))
+		var trips_out := ceili(float(c.n) / float(G.CAP[c.tout]))
+		body += "\n進出：%s 送來（%d 趟）、%s 載走（%d 趟）" % [G.TRANSPORT[c.tin], trips_in, G.TRANSPORT[c.tout], trips_out]
+	if c.get("intl", "") != "":
+		var names: Array = []
+		for d in c.customs.docs:
+			names.append(d.name)
+		body += "\n\n[b]國際貨（%s）[/b]：要辦海關手續。\n需要文件：%s，再由我們製作%s報關單。\n%s後申報；海關可能抽中 [b]C2 書面審核[/b] 或 [b]C3 貨物查驗[/b]（要有海關查驗台）。放行後才能出貨。" % [
+			G.intl_label(c), "、".join(names), "進口" if c.intl == "import" else "出口", "貨到" if c.intl == "import" else "貨全部進倉"]
+		if not main.world.has_table():
+			body += "\n[color=#ffcc66]提醒：你還沒有海關查驗台。[/color]"
 	if c.cargo == "cold" and main.world.total_capacity().cold == 0:
 		body += "\n\n[color=#ff8a80]你還沒有冷藏櫃！[/color]"
 	elif c.cargo == "fragile" and main.world.total_capacity().fragile == 0:
 		body += "\n\n[color=#ff8a80]你還沒有易碎品籠架！[/color]"
 	show_dialog("委託內容", body, [["簽約", func(): G.accept_offer(c), true], ["婉拒", func(): G.decline_offer(c), false], ["再想想", func(): pass, false]])
+
+# ── 通關文件面板 ──
+func _refresh_docs() -> void:
+	if doc_panel == null or main == null:
+		return
+	var intl: Array = []
+	for c in G.contracts:
+		if not c.get("customs", {}).is_empty():
+			intl.append(c)
+	doc_panel.visible = game_box.visible and (not intl.is_empty() or G.harbour or G.airport)
+	if not doc_panel.visible:
+		return
+	doc_toggle.text = "收起" if doc_open else "展開"
+	for ch in doc_body.get_children():
+		doc_body.remove_child(ch)
+		ch.queue_free()
+	if not doc_open:
+		var l0 := _lbl("國際貨物 %d 筆" % intl.size(), 13, DIM)
+		doc_body.add_child(l0)
+		doc_panel.size.y = 0
+		return
+	if intl.is_empty():
+		var l := _lbl("目前沒有國際貨物。\n接下貨輪或貨機的委託後，這裡會列出提單、發票等文件和海關通關進度。", 13, DIM)
+		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		l.custom_minimum_size.x = 290
+		doc_body.add_child(l)
+		doc_panel.size.y = 0
+		return
+	var found := false
+	for c in intl:
+		if int(c.id) == doc_sel:
+			found = true
+	if not found:
+		doc_sel = int(intl[0].id)
+	for c in intl:
+		var sel := int(c.id) == doc_sel
+		var row := _btn("%s　%s" % [c.client, G.customs_text(c)], func(): doc_sel = int(c.id); _refresh_docs(), sel, 13)
+		row.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		row.custom_minimum_size = Vector2(290, 32)
+		doc_body.add_child(row)
+		if sel:
+			doc_body.add_child(_doc_detail(c))
+	var vp_h := root.get_viewport_rect().size.y
+	(doc_body.get_parent() as ScrollContainer).custom_minimum_size.y = minf(doc_body.get_combined_minimum_size().y, vp_h - 92 - 120 - 60)
+	doc_panel.size.y = 0
+
+func _doc_detail(c: Dictionary) -> Control:
+	var cu: Dictionary = c.customs
+	var p := PanelContainer.new()
+	p.add_theme_stylebox_override("panel", _sb(Color(0.96, 0.95, 0.9), 8, 10))
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 3)
+	p.add_child(v)
+	var ink := Color(0.12, 0.13, 0.17)
+	var green := Color(0.15, 0.5, 0.25)
+	var amber := Color(0.75, 0.45, 0.0)
+	v.add_child(_lbl("%s・%s %d 板" % [G.intl_label(c), G.CARGO[c.cargo].name, int(c.n)], 14, ink))
+	# 進度
+	var order := ["docs", "declared", "check", "released"]
+	var names := {"docs": "文件齊全", "declared": "海關申報", "check": "審核／查驗", "released": "放行"}
+	var st: String = cu.stage
+	var cur := 0
+	match st:
+		"docs": cur = 0
+		"declared": cur = 1
+		"review", "inspect_move", "inspecting", "inspect_return": cur = 2
+		"released": cur = 4
+	var prog := ""
+	for i in order.size():
+		var mark := "■" if i < cur else ("▶" if i == cur else "□")
+		prog += "%s%s　" % [mark, names[order[i]]]
+	var pl := _lbl(prog, 12, ink)
+	pl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	pl.custom_minimum_size.x = 270
+	v.add_child(pl)
+	var stl := _lbl("目前：%s%s" % [G.STAGE_NAMES.get(st, st), ("（%s）" % cu.cls) if cu.cls != "" and st != "released" else ""], 13, green if st == "released" else Color(0.2, 0.35, 0.7))
+	v.add_child(stl)
+	if st in ["review", "inspecting", "declared"]:
+		v.add_child(_lbl("預計 %s 完成" % G.when_text(float(cu.t)), 12, ink.lerp(Color.GRAY, 0.4)))
+	if st == "inspect_move" and not main.world.has_table():
+		var w := _lbl("需要蓋「海關查驗台」！", 13, Color(0.8, 0.2, 0.15))
+		v.add_child(w)
+	var sep := HSeparator.new()
+	v.add_child(sep)
+	# 文件清單
+	for i in cu.docs.size():
+		var d: Dictionary = cu.docs[i]
+		var h := HBoxContainer.new()
+		v.add_child(h)
+		var nl := _lbl(("■ " if d.ok else "□ ") + d.name, 13, ink)
+		nl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		h.add_child(nl)
+		if d.ok:
+			h.add_child(_lbl("已收到", 12, green))
+		else:
+			h.add_child(_lbl("待補 %s" % G.clock_text(float(d.eta)) if bool(d.chased) else "待補", 12, amber))
+			if not bool(d.chased):
+				var ii: int = i
+				var b := _btn("催件", func(): G.chase_doc(c, ii); _refresh_docs(), true, 12)
+				b.custom_minimum_size = Vector2(48, 26)
+				h.add_child(b)
+	var decl := "進口報關單" if c.intl == "import" else "出口報關單"
+	var dh := HBoxContainer.new()
+	v.add_child(dh)
+	var dl := _lbl(("■ " if st != "docs" else "□ ") + decl + "（我方製作）", 13, ink)
+	dl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	dh.add_child(dl)
+	var ds := "等文件齊全" if st == "docs" else ("已送出" if st == "declared" else ("已核准" if st == "released" else "審核中"))
+	dh.add_child(_lbl(ds, 12, green if st == "released" else amber))
+	var when := "取貨" if c.intl == "import" else "裝船／裝機"
+	v.add_child(_lbl("%s：%s" % [when, G.when_text(float(c.pickup))], 12, ink.lerp(Color.GRAY, 0.4)))
+	if int(c.late_pen) > 0:
+		v.add_child(_lbl("延誤扣款 %s" % G.fmt(int(c.late_pen)), 12, Color(0.8, 0.2, 0.15)))
+	return p
 
 # ── 提示訊息 ──
 func add_toast(text: String, kind: String = "info") -> void:
@@ -540,7 +717,7 @@ func _refresh_info() -> void:
 			hide_info()
 			return
 		var c := G.contract_by_id(t.cid)
-		var nm := {"truck": "卡車", "van": "沒有標記的廂型車", "rail": "貨運列車", "ship": "貨輪"}
+		var nm := {"truck": "卡車", "van": "沒有標記的廂型車", "rail": "貨運列車", "ship": "貨輪", "air": "貨機"}
 		var s := "[b]%s[/b]\n" % nm.get(t.kind, "車輛")
 		if c.is_empty():
 			s += "任務完成，正在離開。"
@@ -619,6 +796,9 @@ func show_dialog(title: String, body: String, buttons: Array, width := 460, paus
 	return v
 
 func close_modal() -> void:
+	if _help_page >= 0 or Snd.voice_playing():
+		Snd.stop_voice()
+	_voice_btn = null
 	if modal:
 		modal.queue_free()
 		modal = null
@@ -664,6 +844,10 @@ func show_expand() -> void:
 		items.append(["興建港口", "海邊蓋碼頭、起重機和高架輸送帶，貨輪一次 12～18 板。每日 %s。" % G.fmt(G.HARBOUR_DAILY), G.HARBOUR_PRICE, func(): main.buy_harbour()])
 	else:
 		items.append(["港口", "已啟用。", 0, Callable()])
+	if not G.airport:
+		items.append(["興建航空貨運站", "倉庫左邊蓋跑道、停機坪、塔台和機庫，左牆開一扇空運門。貨機一次 4～8 板高價值國際貨（電子、生技、精品），報酬最高，但都要辦海關手續。每日 %s。" % G.fmt(G.AIRPORT_DAILY), G.AIRPORT_PRICE, func(): main.buy_airport()])
+	else:
+		items.append(["航空貨運站", "已啟用。", 0, Callable()])
 	for it in items:
 		var row := _panel(Color(0.22, 0.27, 0.36), 10, 10)
 		v.add_child(row)
@@ -727,8 +911,24 @@ func toggle_menu() -> void:
 		["存檔", func(): G.save_game(); G.toast.emit("已存檔", "good"), false], ["回標題", func(): G.save_game(); main.restart(""), false],
 		["繼續", func(): pass, true]], 680, true)
 
+var _help_page := -1
+var _voice_btn: Button
+
+func _voice_label() -> String:
+	return "■ 停止朗讀" if Snd.voice_playing() else "▶ 播放語音"
+
+func _toggle_voice(page: int) -> void:
+	if Snd.voice_playing():
+		Snd.stop_voice()
+	else:
+		Snd.play_voice("help_%02d" % page)
+	if _voice_btn:
+		_voice_btn.text = _voice_label()
+
 func show_help(page := 0) -> void:
+	var was_page := _help_page
 	close_modal()
+	_help_page = page
 	modal = Control.new()
 	modal.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	root.add_child(modal)
@@ -744,7 +944,24 @@ func show_help(page := 0) -> void:
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 10)
 	p.add_child(v)
-	v.add_child(_lbl("遊戲說明", 22, ACC))
+	var top := HBoxContainer.new()
+	top.add_theme_constant_override("separation", 10)
+	v.add_child(top)
+	var tt := _lbl("遊戲說明", 22, ACC)
+	tt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	top.add_child(tt)
+	_voice_btn = _btn(_voice_label(), func(): _toggle_voice(page), true, 15)
+	_voice_btn.custom_minimum_size = Vector2(130, 36)
+	top.add_child(_voice_btn)
+	var ac := CheckBox.new()
+	ac.text = "自動朗讀"
+	ac.button_pressed = Snd.auto_voice
+	ac.focus_mode = Control.FOCUS_NONE
+	ac.add_theme_color_override("font_color", TXT)
+	ac.toggled.connect(func(on: bool):
+		Snd.auto_voice = on
+		Snd.save_settings())
+	top.add_child(ac)
 	var h := HBoxContainer.new()
 	h.add_theme_constant_override("separation", 12)
 	v.add_child(h)
@@ -776,7 +993,11 @@ func show_help(page := 0) -> void:
 		bh.add_child(_btn("上一頁", func(): show_help(page - 1), false, 15))
 	if page < Texts.HELP.size() - 1:
 		bh.add_child(_btn("下一頁", func(): show_help(page + 1), false, 15))
-	bh.add_child(_btn("關閉", close_modal, true, 15))
+	bh.add_child(_btn("關閉", func(): Snd.stop_voice(); _help_page = -1; close_modal(), true, 15))
+	# 換頁就朗讀新的一頁
+	if Snd.auto_voice and (was_page != page or not Snd.voice_playing()):
+		Snd.play_voice("help_%02d" % page)
+	_voice_btn.text = _voice_label()
 
 func show_changelog() -> void:
 	var s := "目前版本：[b]v%s[/b]\n" % G.APP_VERSION
@@ -794,7 +1015,7 @@ func show_changelog() -> void:
 func show_settings() -> void:
 	close_modal()
 	var v := show_dialog("設定", "", [["關閉", func(): Snd.save_settings(), true]], 420)
-	for it in [["音樂音量", Snd.music_vol, func(x): Snd.set_music(x)], ["音效音量", Snd.sfx_vol, func(x): Snd.set_sfx(x)]]:
+	for it in [["音樂音量", Snd.music_vol, func(x): Snd.set_music(x)], ["音效音量", Snd.sfx_vol, func(x): Snd.set_sfx(x)], ["語音音量", Snd.voice_vol, func(x): Snd.voice_vol = x]]:
 		var h := HBoxContainer.new()
 		var l := _lbl(it[0], 16)
 		l.custom_minimum_size.x = 90
@@ -834,6 +1055,8 @@ func show_install() -> void:
 
 func show_welcome() -> void:
 	G.tutorial_done = true
+	if Snd.auto_voice:
+		Snd.play_voice("welcome")
 	show_dialog("歡迎來到小柯物流！", "你剛租下這棟小倉庫，裡面有 [b]2 座一般貨架[/b] 和 [b]1 台堆高機[/b]（司機是小柯機器人）。\n\n① 左邊「新委託」點一張卡片，看看條件，按「簽約」。\n② 時間到，卡車會開到碼頭，堆高機自動把貨搬上貨架。\n③ 取貨時間到，貨出得去就收錢。\n\n賺到錢就從下方工具列蓋更多貨架、買堆高機，再到「擴建」買地、鋪鐵路、蓋港口。\n\n右上「選單」裡有完整的遊戲說明。祝生意興隆！", [["開始營業", func(): pass, true], ["看完整說明", func(): show_help(), false]], 520, true)
 
 # ── 更新提示 ──

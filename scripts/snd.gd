@@ -6,6 +6,10 @@ const TRACK_NAMES := {"morning_dock": "早班碼頭", "forklift_waltz": "堆高�
 const SFX := ["build", "cash", "ding", "sign", "error", "phone", "siren", "beep", "fanfare", "click", "horn"]
 
 var music := AudioStreamPlayer.new()
+var voice := AudioStreamPlayer.new()
+var voice_vol := 1.0
+var auto_voice := true
+var _duck := 0.0
 var pool: Array = []
 var streams: Dictionary = {}
 var music_vol := 0.6
@@ -16,6 +20,7 @@ var _cooldown: Dictionary = {}
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	add_child(music)
+	add_child(voice)
 	music.finished.connect(next_track)
 	for i in 8:
 		var p := AudioStreamPlayer.new()
@@ -32,16 +37,20 @@ func _load_settings() -> void:
 	if cf.load("user://settings.cfg") == OK:
 		music_vol = float(cf.get_value("audio", "music", 0.6))
 		sfx_vol = float(cf.get_value("audio", "sfx", 0.8))
+		voice_vol = float(cf.get_value("audio", "voice", 1.0))
+		auto_voice = bool(cf.get_value("audio", "auto_voice", true))
 	_apply()
 
 func save_settings() -> void:
 	var cf := ConfigFile.new()
 	cf.set_value("audio", "music", music_vol)
 	cf.set_value("audio", "sfx", sfx_vol)
+	cf.set_value("audio", "voice", voice_vol)
+	cf.set_value("audio", "auto_voice", auto_voice)
 	cf.save("user://settings.cfg")
 
 func _apply() -> void:
-	music.volume_db = linear_to_db(maxf(music_vol, 0.001)) - 6.0
+	music.volume_db = linear_to_db(maxf(music_vol, 0.001)) - 6.0 - _duck
 	music.stream_paused = music_vol <= 0.001
 
 func set_music(v: float) -> void:
@@ -68,6 +77,29 @@ func current_track_name() -> String:
 	if _track < 0:
 		return ""
 	return TRACK_NAMES[TRACKS[_track]]
+
+# ── 語音 ──
+func play_voice(name: String) -> bool:
+	var path := "res://assets/voice/%s.ogg" % name
+	if not ResourceLoader.exists(path):
+		return false
+	voice.stream = load(path)
+	voice.volume_db = linear_to_db(maxf(voice_vol, 0.001))
+	voice.play()
+	return true
+
+func stop_voice() -> void:
+	voice.stop()
+
+func voice_playing() -> bool:
+	return voice.playing
+
+func _process(delta: float) -> void:
+	# 播語音時把音樂壓低 12 dB
+	var want := 12.0 if voice.playing else 0.0
+	if absf(_duck - want) > 0.05:
+		_duck = move_toward(_duck, want, delta * 30.0)
+		_apply()
 
 func play(name: String, vol := 1.0) -> void:
 	if sfx_vol <= 0.001 or not streams.has(name):

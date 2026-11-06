@@ -53,7 +53,8 @@ func _title() -> void:
 	G.plots = 2
 	G.doors = [0, 1, 3]
 	G.rail = true
-	G.harbour = false
+	G.harbour = true
+	G.airport = true
 	G.minute = 1440.0 + 16.5 * 60.0
 	world.rebuild_all()
 	for i in 4:
@@ -88,13 +89,7 @@ func _start_load() -> bool:
 	for i in nf:
 		_add_forklift(world.nearest_walkable(Vector2i(4 + i, 5)))
 	for c in G.contracts:
-		if c.state == "inbound":
-			c.spawned_in = false
-			c.state = "booked"
-			if int(c.n) - int(c.unloaded) <= 0:
-				c.state = "stored"
-		elif c.state == "outbound":
-			c.spawned_out = false
+		if c.state == "inbound" and int(c.n) - int(c.unloaded) <= 0:
 			c.state = "stored"
 	world.refresh_capacity()
 	_begin()
@@ -116,7 +111,8 @@ func restart(mode: String) -> void:
 
 func _update_bounds() -> void:
 	var W := world.cols() * World.TILE
-	cam.bounds = Rect2(-30, -25, W + 70, 75)
+	var x0 := -90.0 if G.airport else -30.0
+	cam.bounds = Rect2(x0, -25, W + 70 - x0 - 30, 75)
 
 func _add_forklift(c: Vector2i) -> Forklift:
 	var f := Forklift.new()
@@ -132,14 +128,17 @@ func _process(delta: float) -> void:
 		return
 	if not G.playing or G.over:
 		return
+	# 依委託派車：一趟裝不完就分批，一次一台
 	for c in G.contracts.duplicate():
-		if c.state == "booked" and G.minute >= float(c.arrive) and not c.spawned_in:
-			c.spawned_in = true
+		if c.state in ["booked", "inbound"] and G.minute >= float(c.arrive) and not c.get("veh_in", false) \
+				and int(c.unloaded) < int(c.n) and G.minute >= float(c.get("next_in", 0.0)):
+			c["veh_in"] = true
 			c.state = "inbound"
 			_spawn(c, "in")
 			G.contracts_changed.emit()
-		elif c.state == "stored" and G.minute >= float(c.pickup) and not c.spawned_out:
-			c.spawned_out = true
+		elif c.state in ["stored", "outbound"] and G.minute >= float(c.pickup) and not c.get("veh_out", false) \
+				and int(c.loaded) < int(c.unloaded) and G.customs_released(c) and G.minute >= float(c.get("next_out", 0.0)):
+			c["veh_out"] = true
 			c.state = "outbound"
 			_spawn(c, "out")
 			G.contracts_changed.emit()
@@ -150,7 +149,7 @@ func _spawn(c: Dictionary, mode: String) -> void:
 	world.dyn.add_child(v)
 	world.vehicles.append(v)
 	v.setup(world, c, mode)
-	if c.transport in ["truck", "van"] and randf() < 0.3:
+	if c.get("tin", "truck") in ["truck", "van"] and randf() < 0.3:
 		Snd.play("horn", 0.4)
 
 # ── 建造 ──
@@ -314,6 +313,8 @@ func buy_plot() -> void:
 	Snd.play("fanfare")
 
 func buy_rail() -> void:
+	if not _door_clear("rail"):
+		return
 	if G.rail or not G.spend(G.RAIL_PRICE):
 		return
 	G.rail = true
@@ -322,7 +323,31 @@ func buy_rail() -> void:
 	G.toast.emit("鐵路支線通車！之後會有火車的大宗委託。", "good")
 	Snd.play("fanfare")
 
+func _door_clear(what: String) -> bool:
+	var bad: Array = world.blocked_cells(world.door_cells(what))
+	if bad.is_empty():
+		return true
+	var c: Vector2i = bad[0]
+	G.toast.emit("新門口的位置（第 %d 欄、第 %d 列）被貨架擋住了，請先拆掉那座貨架再擴建。" % [c.x + 1, c.y + 1], "bad")
+	Snd.play("error")
+	cam.focus(world.cell_center(c), 26.0)
+	return false
+
+func buy_airport() -> void:
+	if not _door_clear("air"):
+		return
+	if G.airport or not G.spend(G.AIRPORT_PRICE):
+		return
+	G.airport = true
+	_rebuild_property()
+	_update_bounds()
+	cam.focus(Vector3(-30, 0, 12), 50.0)
+	G.toast.emit("航空貨運站啟用！貨機會帶來高價值的國際空運貨。", "good")
+	Snd.play("fanfare")
+
 func buy_harbour() -> void:
+	if not _door_clear("harbour"):
+		return
 	if G.harbour or not G.spend(G.HARBOUR_PRICE):
 		return
 	G.harbour = true

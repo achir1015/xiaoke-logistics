@@ -8,10 +8,14 @@ const PD := 8           # 倉庫深（格）
 const FRONT_Z := 16.0
 const ROAD_Z := 37.0
 const RAIL_Z := -4.5
-const SHIP_Z := -18.0
+const SHIP_Z := -21.0
+const SHORE_Z := -12.0
 const DOOR_OFFS := [2, 5, 8]
 const RAIL_CELL := Vector2i(3, 0)
 const HARBOUR_CELL := Vector2i(7, 0)
+const AIR_CELL := Vector2i(0, 3)
+const RUNWAY_Z := 14.0
+const APRON_Z := 13.0
 
 class Pallet:
 	var node: Node3D
@@ -23,6 +27,7 @@ class Pallet:
 	var slot: int = -1
 	var dock = null
 	var pad_i: int = -1
+	var inspect_dir: String = ""   # to / back：搬去／搬離海關查驗台
 
 class Rack:
 	var id: int
@@ -123,6 +128,8 @@ func reserved_cell(c: Vector2i) -> bool:
 	for dc in [RAIL_CELL, HARBOUR_CELL]:
 		if c == dc or c == dc + Vector2i(0, 1):
 			return true
+	if c == AIR_CELL or c == AIR_CELL + Vector2i(1, 0):
+		return true
 	return false
 
 # ── 建置整個場景 ──
@@ -177,6 +184,14 @@ func _rebuild_docks() -> void:
 			d.cell = HARBOUR_CELL
 			d.out_dir = Vector3(0, 0, -1)
 		list.append(d)
+	if G.airport:
+		var d: Dock = old.get(_dock_key("air", AIR_CELL), null)
+		if d == null:
+			d = Dock.new()
+			d.kind = "air"
+			d.cell = AIR_CELL
+			d.out_dir = Vector3(-1, 0, 0)
+		list.append(d)
 	for i in list.size():
 		list[i].id = i
 	docks = list
@@ -227,12 +242,9 @@ func _rebuild_env() -> void:
 	var W := cols() * TILE
 	var grass := Color(0.42, 0.6, 0.34)
 	var asphalt := Color(0.34, 0.34, 0.35)
-	# 草地
-	M.box(env, Vector3(600, 0.2, 400), Vector3(60, -0.12, 0), grass, false)
-	# 海
-	var sea := M.box(env, Vector3(600, 0.2, 200), Vector3(60, -0.6, -112), Color(0.25, 0.55, 0.78), false)
-	sea.material_override = M.mat(Color(0.28, 0.58, 0.8), 0.0, 0.25)
-	M.box(env, Vector3(600, 0.8, 1.0), Vector3(60, -0.3, -12.5), Color(0.62, 0.6, 0.55), false)
+	# 草地（只到海岸線）
+	M.box(env, Vector3(600, 0.2, 212), Vector3(60, -0.12, SHORE_Z + 106.0), grass, false)
+	_build_sea()
 	# 道路
 	M.box(env, Vector3(600, 0.04, 9.0), Vector3(60, 0.0, ROAD_Z), asphalt, false)
 	M.box(env, Vector3(600, 0.05, 1.6), Vector3(60, 0.0, ROAD_Z - 5.3), Color(0.8, 0.78, 0.72), false)
@@ -262,6 +274,7 @@ func _rebuild_env() -> void:
 				M.box(env, Vector3(1.9, 0.12, 0.2), cp + Vector3(0, 0, -0.6 + k * 0.6), Color(0.25, 0.25, 0.25), false)
 	_build_walls(W)
 	_build_extras(W)
+	_build_airport()
 	_scatter_trees(W)
 	_build_lamps(W)
 	update_daylight()
@@ -278,7 +291,7 @@ func _build_walls(W: float) -> void:
 	if G.harbour:
 		back_gaps.append(cell_center(HARBOUR_CELL).x)
 	_wall_run(Vector3(0, 0, 0), Vector3(W, 0, 0), back_gaps, h, t, wall, trim)
-	_wall_run(Vector3(0, 0, 0), Vector3(0, 0, FRONT_Z), [], h, t, wall, trim)
+	_wall_run(Vector3(0, 0, 0), Vector3(0, 0, FRONT_Z), [cell_center(AIR_CELL).z] if G.airport else [], h, t, wall, trim)
 	_wall_run(Vector3(W, 0, 0), Vector3(W, 0, FRONT_Z), [], h, t, wall, trim)
 	# 前牆：每個門位都有門框，未開的拉下鐵捲門
 	var gaps: Array = []
@@ -368,29 +381,10 @@ func _build_extras(W: float) -> void:
 可擴建", Vector3(0, 1.6, 0.06), 30, Color(0.3, 0.2, 0.15), false).billboard = BaseMaterial3D.BILLBOARD_DISABLED
 	# 港口
 	if G.harbour:
-		var hx := cell_center(HARBOUR_CELL).x
-		M.box(env, Vector3(30, 1.0, 5.0), Vector3(hx, -0.1, -10.5), Color(0.66, 0.65, 0.62))
-		for k in 6:
-			M.cyl(env, 0.25, 0.6, Vector3(hx - 12 + k * 4.8, 0.6, -12.6), Color(0.25, 0.25, 0.28))
-		# 高架輸送帶：碼頭 → 越過鐵道 → 後牆
-		var y := 5.2
-		M.box(env, Vector3(1.6, 0.25, 15.0), Vector3(hx, y, -6.5), Color(0.25, 0.27, 0.3))
-		for k in 15:
-			M.box(env, Vector3(1.5, 0.05, 0.6), Vector3(hx, y + 0.15, -13.5 + k * 1.0), Color(0.15, 0.15, 0.16), false)
-		for z in [-12.0, -7.5, -1.5]:
-			for s in [-0.7, 0.7]:
-				M.box(env, Vector3(0.2, y, 0.2), Vector3(hx + s, y / 2, z), Color(0.95, 0.75, 0.15))
-		M.box(env, Vector3(2.4, y + 0.6, 0.3), Vector3(hx, (y + 0.6) / 2, -0.7), Color(0.3, 0.32, 0.36))
-		# 起重機
-		var cr := Node3D.new()
-		cr.position = Vector3(hx + 6.0, 0, -10.5)
-		env.add_child(cr)
-		for s in [-1.5, 1.5]:
-			M.box(cr, Vector3(0.5, 12.0, 0.5), Vector3(s, 6.0, 0), Color(0.9, 0.3, 0.2))
-		M.box(cr, Vector3(4.0, 0.8, 16.0), Vector3(0, 12.0, -4.0), Color(0.9, 0.3, 0.2))
+		_build_harbour()
 	else:
 		var s2 := Node3D.new()
-		s2.position = Vector3(cell_center(HARBOUR_CELL).x, 0, -9.5)
+		s2.position = Vector3(cell_center(HARBOUR_CELL).x, 0, -9.0)
 		env.add_child(s2)
 		M.box(s2, Vector3(0.12, 1.6, 0.12), Vector3(0, 0.8, 0), Color(0.4, 0.3, 0.2))
 		M.box(s2, Vector3(2.4, 1.0, 0.08), Vector3(0, 1.6, 0), Color(0.95, 0.95, 0.9))
@@ -415,6 +409,222 @@ func _build_extras(W: float) -> void:
 		var price: int = G.PLOT_PRICES[G.plots]
 		M.label(sg, "出售\n%s" % G.fmt(price), Vector3(0, 2.0, 0.07), 40, Color.WHITE, false).billboard = BaseMaterial3D.BILLBOARD_DISABLED
 
+var sea_mat: ShaderMaterial
+var bob_nodes: Array = []
+
+func _build_sea() -> void:
+	bob_nodes.clear()
+	if sea_mat == null:
+		var sh := Shader.new()
+		sh.code = """
+shader_type spatial;
+render_mode specular_schlick_ggx;
+uniform vec3 deep : source_color = vec3(0.03, 0.2, 0.42);
+uniform vec3 shallow : source_color = vec3(0.1, 0.42, 0.62);
+uniform float shore_z = -12.0;
+varying vec3 wp;
+float wave(vec2 p, float t) {
+	return sin(p.x * 0.18 + t * 1.1) * 0.16 + sin(p.y * 0.27 - t * 0.8) * 0.12
+		+ sin((p.x + p.y) * 0.45 + t * 1.9) * 0.05 + sin((p.x - p.y * 0.6) * 0.9 - t * 2.6) * 0.025;
+}
+void vertex() {
+	wp = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	float t = TIME;
+	float h = wave(wp.xz, t);
+	float e = 0.25;
+	float hx = wave(wp.xz + vec2(e, 0.0), t) - h;
+	float hz = wave(wp.xz + vec2(0.0, e), t) - h;
+	VERTEX.y += h;
+	NORMAL = normalize(vec3(-hx / e, 1.0, -hz / e));
+}
+void fragment() {
+	float d = clamp((shore_z - wp.z) / 45.0, 0.0, 1.0);
+	vec3 col = mix(shallow, deep, d);
+	// 浪頭的亮紋與靠岸白浪
+	float crest = smoothstep(0.82, 1.0, sin(wp.x * 0.35 + wp.z * 0.6 + TIME * 1.7) * 0.5 + 0.5) * 0.12;
+	float foam = smoothstep(2.2, 0.0, shore_z - wp.z) * (0.55 + 0.45 * sin(wp.x * 1.3 + TIME * 2.2));
+	col = mix(col, vec3(0.92, 0.96, 1.0), clamp(foam * 0.6 + crest, 0.0, 0.8));
+	ALBEDO = col;
+	ROUGHNESS = 0.12;
+	SPECULAR = 0.7;
+	METALLIC = 0.05;
+}
+"""
+		sea_mat = ShaderMaterial.new()
+		sea_mat.shader = sh
+	var pm := PlaneMesh.new()
+	pm.size = Vector2(620, 200)
+	pm.subdivide_width = 155
+	pm.subdivide_depth = 50
+	var sea := MeshInstance3D.new()
+	sea.mesh = pm
+	sea.material_override = sea_mat
+	sea.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	sea.position = Vector3(60, -0.55, SHORE_Z - 99.5)
+	env.add_child(sea)
+	# 海底（避免波谷透出天空色）
+	M.box(env, Vector3(620, 0.1, 200), Vector3(60, -2.5, SHORE_Z - 100), Color(0.04, 0.16, 0.3), false)
+	# 海岸護岸：石塊斜坡＋岸頂
+	M.box(env, Vector3(620, 2.4, 1.6), Vector3(60, -1.0, SHORE_Z - 0.8), Color(0.5, 0.5, 0.48), false)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 77
+	for i in 120:
+		var x := -240.0 + i * 5.0 + rng.randf_range(-1.5, 1.5)
+		var r := M.box(env, Vector3(rng.randf_range(1.2, 2.2), rng.randf_range(0.6, 1.1), rng.randf_range(1.0, 1.6)),
+			Vector3(x, -0.45, SHORE_Z - 1.9 + rng.randf_range(-0.3, 0.3)), Color(0.42, 0.42, 0.44).lerp(Color(0.55, 0.52, 0.48), rng.randf()), false)
+		r.rotation.y = rng.randf() * PI
+	# 防波堤與燈塔
+	for i in 34:
+		var bx := -60.0 + i * 5.0
+		M.box(env, Vector3(5.4, 1.8, 3.4), Vector3(bx, -0.2, -64.0), Color(0.6, 0.6, 0.58), false)
+		var tp := M.box(env, Vector3(2.0, 1.2, 2.0), Vector3(bx + rng.randf_range(-1.5, 1.5), 0.5, -64.0 + rng.randf_range(-0.8, 0.8)), Color(0.72, 0.72, 0.7), false)
+		tp.rotation = Vector3(0.3, rng.randf() * PI, 0.25)
+	var lh := Node3D.new()
+	lh.position = Vector3(112, 0, -64)
+	env.add_child(lh)
+	M.cyl(lh, 2.6, 1.4, Vector3(0, 0.6, 0), Color(0.6, 0.6, 0.58))
+	for k in 5:
+		M.cyl(lh, 1.25 - k * 0.08, 1.6, Vector3(0, 2.1 + k * 1.6, 0), Color(0.95, 0.95, 0.95) if k % 2 == 0 else Color(0.85, 0.2, 0.18))
+	M.cyl(lh, 1.0, 1.2, Vector3(0, 10.5, 0), Color(0.2, 0.25, 0.3))
+	var lamp := M.cyl(lh, 0.7, 0.9, Vector3(0, 10.5, 0), Color(1, 0.95, 0.7))
+	lamp.material_override = lamp_mats[0] if not lamp_mats.is_empty() else M.mat(Color(1, 0.9, 0.6), 2.0)
+	M.cyl(lh, 1.3, 0.3, Vector3(0, 11.2, 0), Color(0.85, 0.2, 0.18))
+	# 航道浮標（左紅右綠）
+	for i in 6:
+		for side in [0, 1]:
+			var by := Node3D.new()
+			by.position = Vector3(-20.0 + i * 22.0, -0.4, -30.0 - side * 14.0)
+			env.add_child(by)
+			var col := Color(0.85, 0.15, 0.12) if side == 0 else Color(0.1, 0.6, 0.25)
+			M.cyl(by, 0.45, 1.6, Vector3(0, 0.6, 0), col)
+			M.cyl(by, 0.2, 0.6, Vector3(0, 1.7, 0), col.darkened(0.3))
+			bob_nodes.append(by)
+
+func _build_harbour() -> void:
+	var hx := cell_center(HARBOUR_CELL).x
+	var qz := SHORE_Z - 3.0
+	# 碼頭岸壁（伸入海中）
+	M.box(env, Vector3(64, 2.6, 6.0), Vector3(hx + 2, -1.05, SHORE_Z - 3.0), Color(0.62, 0.62, 0.6))
+	M.box(env, Vector3(64, 0.1, 6.0), Vector3(hx + 2, 0.27, SHORE_Z - 3.0), Color(0.55, 0.55, 0.54), false)
+	M.box(env, Vector3(64, 0.08, 0.25), Vector3(hx + 2, 0.33, SHORE_Z - 5.4), Color(0.98, 0.8, 0.2), false)
+	# 防舷材與繫纜樁
+	for k in 13:
+		var fx := hx - 28.0 + k * 5.0
+		M.box(env, Vector3(1.2, 1.4, 0.5), Vector3(fx, -0.6, SHORE_Z - 6.2), Color(0.1, 0.1, 0.1))
+		M.cyl(env, 0.25, 0.5, Vector3(fx + 2.5, 0.55, SHORE_Z - 5.6), Color(0.2, 0.22, 0.25))
+	# 岸邊貨櫃起重機（兩座）
+	for k in 2:
+		var cr := Node3D.new()
+		cr.position = Vector3(hx - 14.0 + k * 26.0, 0.3, qz)
+		env.add_child(cr)
+		var blue := Color(0.15, 0.4, 0.72)
+		for lx in [-3.0, 3.0]:
+			for lz in [-2.2, 2.2]:
+				M.box(cr, Vector3(0.6, 15.0, 0.6), Vector3(lx, 7.5, lz), blue)
+			M.box(cr, Vector3(0.7, 0.6, 5.0), Vector3(lx, 0.3, 0), Color(0.3, 0.3, 0.32))
+		M.box(cr, Vector3(6.8, 0.8, 0.8), Vector3(0, 6.0, -2.2), blue)
+		M.box(cr, Vector3(6.8, 0.8, 0.8), Vector3(0, 6.0, 2.2), blue)
+		M.box(cr, Vector3(7.2, 1.2, 5.4), Vector3(0, 15.2, 0), blue)
+		# 吊臂伸到海上
+		M.box(cr, Vector3(2.4, 1.0, 24.0), Vector3(0, 15.9, -9.0), Color(0.95, 0.95, 0.95))
+		M.box(cr, Vector3(2.4, 1.0, 9.0), Vector3(0, 15.9, 7.5), Color(0.95, 0.95, 0.95))
+		M.box(cr, Vector3(1.8, 1.3, 2.0), Vector3(0, 14.6, -10.0), Color(0.95, 0.75, 0.15))
+		M.box(cr, Vector3(0.05, 6.0, 0.05), Vector3(0, 11.0, -10.0), Color(0.2, 0.2, 0.2), false)
+		var sp := M.box(cr, Vector3(2.0, 0.4, 3.0), Vector3(0, 7.8, -10.0), Color(0.3, 0.3, 0.32))
+		sp.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	# 貨櫃堆場（鐵道與海岸之間）
+	var pal := [Color(0.82, 0.22, 0.18), Color(0.16, 0.42, 0.72), Color(0.2, 0.58, 0.36), Color(0.95, 0.6, 0.15), Color(0.55, 0.57, 0.6), Color(0.1, 0.55, 0.6)]
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 314
+	for side in [-1, 1]:
+		for col in 3:
+			var x0: float = hx + side * (9.0 + col * 6.6)
+			for row in 2:
+				var h := rng.randi_range(1, 2)
+				for t in h:
+					var c: Color = pal[rng.randi() % pal.size()]
+					M.box(env, Vector3(6.1, 2.4, 2.4), Vector3(x0, 1.2 + t * 2.45, -8.0 - row * 2.55), c)
+	# 高架輸送帶：碼頭 → 越過鐵道 → 後牆
+	var y := 5.2
+	M.box(env, Vector3(1.6, 0.25, 17.0), Vector3(hx, y, -7.5), Color(0.25, 0.27, 0.3))
+	for k in 17:
+		M.box(env, Vector3(1.5, 0.05, 0.6), Vector3(hx, y + 0.15, -15.5 + k * 1.0), Color(0.15, 0.15, 0.16), false)
+	for z in [-14.0, -9.5, -1.5]:
+		for s3 in [-0.7, 0.7]:
+			M.box(env, Vector3(0.2, y + 1.0, 0.2), Vector3(hx + s3, (y - 1.0) / 2.0, z), Color(0.95, 0.75, 0.15))
+	M.box(env, Vector3(2.4, y + 0.6, 0.3), Vector3(hx, (y + 0.6) / 2, -0.7), Color(0.3, 0.32, 0.36))
+	# 拖船
+	var tg := M.tug()
+	tg.position = Vector3(hx + 38.0, -0.45, SHORE_Z - 12.0)
+	tg.rotation.y = 0.4
+	env.add_child(tg)
+	bob_nodes.append(tg)
+
+func _bob(t: float) -> void:
+	for i in bob_nodes.size():
+		var nd: Node3D = bob_nodes[i]
+		if is_instance_valid(nd):
+			nd.position.y = -0.45 + sin(t * 1.3 + i) * 0.12
+			nd.rotation.z = sin(t * 0.9 + i * 0.7) * 0.05
+
+func _build_airport() -> void:
+	var door_z := cell_center(AIR_CELL).z
+	if not G.airport:
+		var s := Node3D.new()
+		s.position = Vector3(-14, 0, door_z + 2.0)
+		s.rotation.y = PI / 2
+		env.add_child(s)
+		M.box(s, Vector3(0.12, 1.6, 0.12), Vector3(0, 0.8, 0), Color(0.4, 0.3, 0.2))
+		M.box(s, Vector3(2.6, 1.0, 0.08), Vector3(0, 1.6, 0), Color(0.95, 0.95, 0.9))
+		M.label(s, "航空貨運站\n可擴建", Vector3(0, 1.6, 0.06), 30, Color(0.15, 0.25, 0.4), false).billboard = BaseMaterial3D.BILLBOARD_DISABLED
+		return
+	# 停機坪與跑道
+	M.box(env, Vector3(52, 0.06, 24), Vector3(-27, 0.01, 11), Color(0.68, 0.68, 0.66), false)
+	M.box(env, Vector3(150, 0.07, 10), Vector3(-125, 0.02, RUNWAY_Z), Color(0.24, 0.25, 0.27), false)
+	for i in 30:
+		M.box(env, Vector3(3.0, 0.08, 0.3), Vector3(-196 + i * 5.0, 0.03, RUNWAY_Z), Color(0.95, 0.95, 0.95), false)
+	for k in 8:
+		M.box(env, Vector3(0.4, 0.09, 6.0), Vector3(-195 + k * 0.8, 0.03, RUNWAY_Z), Color(0.95, 0.95, 0.95), false)
+	for i in 16:
+		for z in [RUNWAY_Z - 5.2, RUNWAY_Z + 5.2]:
+			var lb := M.box(env, Vector3(0.25, 0.25, 0.25), Vector3(-198 + i * 10.0, 0.12, z), Color(0.3, 0.6, 1.0), false)
+			lb.material_override = lamp_mats[0] if not lamp_mats.is_empty() else M.mat(Color(0.3, 0.6, 1.0), 1.5)
+	# 滑行線
+	M.box(env, Vector3(40, 0.07, 0.25), Vector3(-28, 0.03, APRON_Z), Color(1.0, 0.82, 0.2), false)
+	M.box(env, Vector3(0.25, 0.07, APRON_Z - door_z), Vector3(-6.5, 0.03, (APRON_Z + door_z) / 2.0), Color(1.0, 0.82, 0.2), false)
+	# 塔台
+	var tw := Node3D.new()
+	tw.position = Vector3(-42, 0, 25)
+	env.add_child(tw)
+	M.cyl(tw, 1.3, 10.0, Vector3(0, 5.0, 0), Color(0.9, 0.9, 0.88))
+	M.cyl(tw, 2.4, 2.2, Vector3(0, 11.1, 0), Color(0.3, 0.55, 0.75))
+	M.cyl(tw, 2.6, 0.4, Vector3(0, 12.4, 0), Color(0.85, 0.85, 0.85))
+	# 機庫
+	var hg := Node3D.new()
+	hg.position = Vector3(-72, 0, 25.5)
+	env.add_child(hg)
+	M.box(hg, Vector3(18, 6.5, 9), Vector3(0, 3.25, 0), Color(0.75, 0.8, 0.84))
+	M.box(hg, Vector3(18.2, 0.6, 9.2), Vector3(0, 6.6, 0), Color(0.85, 0.42, 0.28))
+	M.box(hg, Vector3(12, 5, 0.1), Vector3(0, 2.5, -4.55), Color(0.5, 0.55, 0.6))
+	M.label(hg, "小柯航空貨運", Vector3(0, 5.6, -4.65), 80, Color(0.15, 0.25, 0.45), false).billboard = BaseMaterial3D.BILLBOARD_DISABLED
+	# 升降平台車（K-loader）與空運門
+	var kl := Node3D.new()
+	kl.position = Vector3(-4.2, 0, door_z)
+	env.add_child(kl)
+	M.box(kl, Vector3(3.6, 0.6, 2.6), Vector3(0, 0.4, 0), Color(0.95, 0.75, 0.15))
+	M.box(kl, Vector3(3.4, 0.2, 2.4), Vector3(0, 2.2, 0), Color(0.35, 0.37, 0.4))
+	for x in [-1.2, 1.2]:
+		M.box(kl, Vector3(0.15, 1.8, 0.15), Vector3(x, 1.3, 0), Color(0.3, 0.3, 0.3))
+	var fr := Node3D.new()
+	fr.position = Vector3(0, 0, door_z)
+	env.add_child(fr)
+	M.box(fr, Vector3(0.5, 4.2, 0.25), Vector3(0, 2.1, -1.45), Color(0.3, 0.32, 0.36))
+	M.box(fr, Vector3(0.5, 4.2, 0.25), Vector3(0, 2.1, 1.45), Color(0.3, 0.32, 0.36))
+	M.box(fr, Vector3(0.3, 1.0, 3.1), Vector3(0, 3.7, 0), Color(0.62, 0.74, 0.8))
+	var l := M.label(fr, "空運", Vector3(-0.2, 3.7, 0), 70, Color(0.15, 0.2, 0.3), false)
+	l.billboard = BaseMaterial3D.BILLBOARD_DISABLED
+	l.rotation.y = -PI / 2
+
 func _scatter_trees(W: float) -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 1015
@@ -430,6 +640,8 @@ func _scatter_trees(W: float) -> void:
 		if p.x > -6 and p.x < W + PW * TILE + 4 and p.z > -7.5 and p.z < FRONT_Z + 17:
 			continue
 		if absf(p.z - RAIL_Z) < 3.0:
+			continue
+		if p.x < -2.0 and p.x > -200.0 and p.z > -3.0 and p.z < 31.0:
 			continue
 		var k := rng.randi() % scenes.size()
 		var t: Node3D = (scenes[k] as PackedScene).instantiate()
@@ -541,8 +753,9 @@ func rack_access(r: Rack, i: int, from: Vector2i) -> Dictionary:
 		var ac: Vector2i = cd[0]
 		if not in_floor(ac) or astar.is_point_solid(ac):
 			continue
-		var path := astar.get_id_path(from, ac)
-		if path.is_empty() and from != ac:
+		var start := nearest_walkable(from)
+		var path := astar.get_id_path(start, ac)
+		if path.is_empty() and start != ac:
 			continue
 		if path.size() < best_len:
 			best_len = path.size()
@@ -573,6 +786,8 @@ func free_capacity() -> Dictionary:
 	var out := {"general": 0, "cold": 0, "fragile": 0}
 	for r in racks:
 		var acc: Array = G.BUILD[r.kind].cargo
+		if acc.is_empty():
+			continue
 		out[acc[0]] += r.free_count()
 	return out
 
@@ -580,12 +795,18 @@ func total_capacity() -> Dictionary:
 	var out := {"general": 0, "cold": 0, "fragile": 0}
 	for r in racks:
 		var acc: Array = G.BUILD[r.kind].cargo
+		if acc.is_empty():
+			continue
 		out[acc[0]] += r.slots.size()
 	return out
 
 # ── 碼頭分配 ──
 func claim_dock(kind: String, v) -> Dock:
-	var want := "truck" if kind in ["truck", "van"] else ("rail" if kind == "rail" else "harbour")
+	var want := "truck"
+	match kind:
+		"rail": want = "rail"
+		"ship": want = "harbour"
+		"air": want = "air"
 	for d in docks:
 		if d.kind == want and d.claimed_by == null:
 			d.claimed_by = v
@@ -602,6 +823,9 @@ func _process(delta: float) -> void:
 	if G.over:
 		return
 	update_daylight()
+	_bob(Time.get_ticks_msec() / 1000.0)
+	if G.playing:
+		_customs_tick(delta * G.MIN_PER_SEC * G.speed)
 	_dispatch_t -= delta
 	if _dispatch_t <= 0.0:
 		_dispatch_t = 0.15
@@ -644,7 +868,9 @@ func _dispatch() -> void:
 		var c := G.contract_by_id(cid)
 		if c.is_empty():
 			continue
-		var need: int = int(c.unloaded) - int(c.loaded)
+		if not G.customs_released(c):
+			continue
+		var need: int = mini(int(c.unloaded) - int(c.loaded), v.target - v.got)
 		for p in pallets:
 			if p.cid == cid and (p.state == "pad_out" or (p.claimed and p.state == "rack") or p.state == "fork"):
 				need -= 1
@@ -655,7 +881,7 @@ func _dispatch() -> void:
 			var src: Pallet = null
 			var best := 1e9
 			for p in pallets:
-				if p.cid == cid and p.state == "rack" and not p.claimed:
+				if p.cid == cid and p.state == "rack" and not p.claimed and p.rack.kind != "inspect":
 					var dist := cell_center(d.inner_cell()).distance_to(p.node.global_position)
 					if dist < best:
 						best = dist
@@ -671,6 +897,189 @@ func _dispatch() -> void:
 			f.assign({"pallet": src, "from": acc, "to_dock": d, "to_pad": pi})
 			idle.erase(f)
 			need -= 1
+	# C) 海關抽驗：搬到查驗台／搬回貨架
+	_dispatch_inspect(idle)
+
+func _dispatch_inspect(idle: Array) -> void:
+	for c in G.contracts:
+		if idle.is_empty():
+			return
+		var cu: Dictionary = c.get("customs", {})
+		if cu.is_empty():
+			continue
+		var cid: int = int(c.id)
+		if cu.stage == "inspect_move":
+			var have := 0
+			for p in pallets:
+				if p.cid == cid and ((p.state == "rack" and p.rack.kind == "inspect") or p.inspect_dir == "to"):
+					have += 1
+			var need: int = int(cu.inspect_n) - have
+			while need > 0 and not idle.is_empty():
+				var tslot := _free_table_slot()
+				if tslot.is_empty():
+					break
+				var src: Pallet = null
+				for p in pallets:
+					if p.cid == cid and p.state == "rack" and not p.claimed and p.rack.kind != "inspect":
+						src = p
+						break
+				if src == null:
+					break
+				var f = _nearest(idle, world_to_cell(src.node.global_position))
+				var acc := rack_access(src.rack, src.slot, f.cell())
+				if acc.is_empty():
+					break
+				src.claimed = true
+				src.inspect_dir = "to"
+				tslot.rack.reserved[tslot.i] = true
+				f.assign({"pallet": src, "from": acc, "to_rack": tslot.rack, "to_slot": tslot.i})
+				idle.erase(f)
+				need -= 1
+		elif cu.stage == "inspect_return":
+			for p in pallets:
+				if idle.is_empty():
+					return
+				if p.cid != cid or p.state != "rack" or p.claimed or p.rack.kind != "inspect":
+					continue
+				var f = _nearest(idle, world_to_cell(p.node.global_position))
+				var slot := _find_slot(p.cargo, f.cell())
+				if slot.is_empty():
+					continue
+				var acc := rack_access(p.rack, p.slot, f.cell())
+				if acc.is_empty():
+					continue
+				slot.rack.reserved[slot.i] = true
+				p.claimed = true
+				p.inspect_dir = "back"
+				f.assign({"pallet": p, "from": acc, "to_rack": slot.rack, "to_slot": slot.i})
+				idle.erase(f)
+
+func _free_table_slot() -> Dictionary:
+	for r in racks:
+		if r.kind != "inspect":
+			continue
+		for i in r.slots.size():
+			if r.slots[i] == null and not r.reserved[i]:
+				return {"rack": r, "i": i}
+	return {}
+
+# 擴建前檢查：門口的格子是否被貨架擋住
+func blocked_cells(cells: Array) -> Array:
+	var out: Array = []
+	for c in cells:
+		if occ.has(c):
+			out.append(c)
+	return out
+
+func door_cells(what: String) -> Array:
+	match what:
+		"rail": return [RAIL_CELL, RAIL_CELL + Vector2i(0, 1)]
+		"harbour": return [HARBOUR_CELL, HARBOUR_CELL + Vector2i(0, 1)]
+		"air": return [AIR_CELL, AIR_CELL + Vector2i(1, 0)]
+	return []
+
+func has_table() -> bool:
+	for r in racks:
+		if r.kind == "inspect":
+			return true
+	return false
+
+func _on_table(cid: int) -> int:
+	var n := 0
+	for p in pallets:
+		if p.cid == cid and ((p.state == "rack" and p.rack.kind == "inspect") or p.inspect_dir != ""):
+			n += 1
+	return n
+
+# ── 海關流程 ──
+func _customs_tick(dm: float) -> void:
+	if dm <= 0.0:
+		return
+	var changed := false
+	for c in G.contracts:
+		var cu: Dictionary = c.get("customs", {})
+		if cu.is_empty() or c.state == "offer":
+			continue
+		var cid: int = int(c.id)
+		match cu.stage:
+			"docs":
+				for d in cu.docs:
+					if not d.ok and G.minute >= float(d.eta) and G.minute >= float(c.arrive) - 120.0:
+						d.ok = true
+						changed = true
+						G.toast.emit("收到 %s 的「%s」" % [c.client, d.name], "info")
+				var ready := G.missing_docs(c) == 0
+				if c.intl == "import":
+					ready = ready and int(c.unloaded) > 0
+				else:
+					ready = ready and int(c.unloaded) >= int(c.n) and c.state in ["stored", "outbound"]
+				if ready:
+					cu.stage = "declared"
+					cu.t = G.minute + G.rng.randf_range(30.0, 60.0)
+					changed = true
+					G.toast.emit("已向海關申報：%s（%s）" % [c.client, G.intl_label(c)], "info")
+			"declared":
+				if G.minute >= float(cu.t):
+					var r := G.rng.randf()
+					var c3 := 0.15 + (0.08 if c.cargo == "cold" else 0.0)
+					var cls := "C1" if r > 0.27 + c3 else ("C3" if r < c3 else "C2")
+					if G.force_cls != "":
+						cls = G.force_cls
+					cu.cls = cls
+					changed = true
+					match cls:
+						"C1":
+							cu.stage = "released"
+							G.toast.emit("%s：C1 免審免驗，海關已放行！" % c.client, "good")
+						"C2":
+							cu.stage = "review"
+							cu.t = G.minute + G.rng.randf_range(60.0, 180.0)
+							G.toast.emit("%s：C2 書面審核，海關正在看文件。" % c.client, "info")
+						_:
+							cu.stage = "inspect_move"
+							cu.inspect_n = mini(2, maxi(1, int(c.unloaded)))
+							G.toast.emit("%s：C3 貨物查驗！抽驗 %d 板要搬到海關查驗台。" % [c.client, int(cu.inspect_n)], "bad")
+							Snd.play("ding")
+			"review":
+				if G.minute >= float(cu.t):
+					cu.stage = "released"
+					changed = true
+					G.toast.emit("%s：書面審核通過，已放行。" % c.client, "good")
+			"inspect_move":
+				if not has_table() and not bool(cu.warned):
+					cu.warned = true
+					G.toast.emit("需要「海關查驗台」才能讓海關查驗！到下方工具列蓋一座。", "bad")
+					Snd.play("error")
+				var on := 0
+				for p in pallets:
+					if p.cid == cid and p.state == "rack" and p.rack.kind == "inspect":
+						on += 1
+				if on >= int(cu.inspect_n):
+					cu.stage = "inspecting"
+					cu.t = G.minute + G.rng.randf_range(90.0, 180.0)
+					changed = true
+					G.toast.emit("海關人員開始查驗 %s 的貨。" % c.client, "info")
+			"inspecting":
+				if G.minute >= float(cu.t):
+					cu.stage = "inspect_return"
+					changed = true
+					G.toast.emit("查驗完成，%s 的貨沒有問題。" % c.client, "good")
+			"inspect_return":
+				if _on_table(cid) == 0:
+					cu.stage = "released"
+					changed = true
+					G.toast.emit("%s：海關已放行！" % c.client, "good")
+		# 卡在我方（缺文件、沒查驗台）超過取貨時間 2 小時：遲交扣款
+		if cu.stage in ["docs", "inspect_move"] and G.minute > float(c.pickup) + 120.0:
+			var pen := int(int(c.pay) * 0.05 * dm / 60.0)
+			c.late_pen = mini(int(c.late_pen) + pen, int(int(c.pay) * 0.5))
+	for r in racks:
+		if r.kind == "inspect":
+			var off: Node = r.node.get_node_or_null("Officer")
+			if off:
+				(off as Node3D).visible = r.used() > 0
+	if changed:
+		G.contracts_changed.emit()
 
 func _nearest(list: Array, c: Vector2i):
 	var best = list[0]
@@ -710,7 +1119,7 @@ func any_slot_for(cargo: String) -> bool:
 	return false
 
 func path_points(from: Vector2i, to: Vector2i) -> Array:
-	var ids := astar.get_id_path(from, to)
+	var ids := astar.get_id_path(nearest_walkable(from), to)
 	var pts: Array = []
 	for id in ids:
 		pts.append(cell_center(id))

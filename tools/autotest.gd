@@ -25,6 +25,10 @@ func _ready() -> void:
 			match b:
 				"rail": main.buy_rail()
 				"harbour": main.buy_harbour()
+				"airport": main.buy_airport()
+				"inspect":
+					if main.world.can_place(Vector2i(4, 4), 0):
+						main.world.place_rack("inspect", Vector2i(4, 4), 0)
 				"plot": main.buy_plot()
 				"door": main.buy_door()
 				"forklift": main.buy_forklift()
@@ -35,16 +39,35 @@ func _ready() -> void:
 							main.world.place_rack(["rack", "cold", "fragile"][i], c, 1)
 		main.world.refresh_capacity()
 		G.set_speed(float(args.get("speed", "1")))
+		if args.has("cls"):
+			G.force_cls = String(args.cls)
+		if args.has("intl"):
+			# 強制產生國際委託
+			for i in int(args.intl):
+				for k in 40:
+					var o: Dictionary = G._make_offer()
+					if o.intl != "" and (not args.has("ikind") or (o.transport == args.ikind and o.intl == "import")):
+						o.arrive = G.minute + 30.0 + i * 60.0
+						o.pickup = o.arrive + 300.0
+						o.cross = true
+						G.offers.append(o)
+						break
 		if args.has("call"):
 			G.last_call_min = -99999.0
 			G.minute = floor(G.minute / 1440.0) * 1440.0 + 20.0 * 60.0
 			G.money = 3000
 			G.force_call = true
 	if args.has("cam"):
+		await get_tree().create_timer(1.0).timeout
+		if main.cam.focus_tween:
+			main.cam.focus_tween.kill()
 		var p: PackedStringArray = String(args.cam).split(",")
 		main.cam.position = Vector3(float(p[0]), 0, float(p[1]))
 		main.cam.zoom_target = float(p[2])
 		main.cam.zoom = float(p[2])
+		if p.size() > 3:
+			main.cam.yaw_target = deg_to_rad(float(p[3]))
+			main.cam.yaw = main.cam.yaw_target
 		main._title_spin = false
 	if args.has("help"):
 		main.hud.show_help(int(args.help))
@@ -54,14 +77,27 @@ func _ready() -> void:
 			await get_tree().create_timer(1.5).timeout
 			main.hud.close_modal()
 			G.accept_mystery(c)
-			G.set_speed(float(args.get("speed", "1"))))
+			G.set_speed(float(args.get("speed", "1")))
+		if args.has("cls"):
+			G.force_cls = String(args.cls)
+		if args.has("intl"):
+			# 強制產生國際委託
+			for i in int(args.intl):
+				for k in 40:
+					var o: Dictionary = G._make_offer()
+					if o.intl != "" and (not args.has("ikind") or (o.transport == args.ikind and o.intl == "import")):
+						o.arrive = G.minute + 30.0 + i * 60.0
+						o.pickup = o.arrive + 300.0
+						o.cross = true
+						G.offers.append(o)
+						break)
 
 func _process(delta: float) -> void:
 	t += delta
 	if args.has("accept") and G.playing and not G.over:
 		main.hud.close_modal() if main.hud.modal and not args.has("keepmodal") else null
 		for o in G.offers.duplicate():
-			if G.free_slots(o.cargo) >= int(o.n):
+			if G.free_slots(o.cargo) >= int(o.n) or (args.has("force") and o.intl != ""):
 				G.accept_offer(o)
 	if args.has("cop") and G.playing:
 		for v in main.world.vehicles:
@@ -77,6 +113,25 @@ func _process(delta: float) -> void:
 		img.save_png(path)
 		print("[test] shot ", path, "  第%d天 %s 資金 %s 委託 %d 簽約 %d 托盤 %d 車 %d 評價 %d" % [G.day(), G.clock_text(), G.fmt(G.money), G.offers.size(), G.contracts.size(), main.world.pallets.size(), main.world.vehicles.size(), int(G.rating)])
 		_shot_i += 1
+		if args.has("debug"):
+			for f in main.world.forklifts:
+				print("  fork ", f.cell(), " phase=", f.phase, " job=", not f.job.is_empty())
+			for v in main.world.vehicles:
+				if is_instance_valid(v):
+					print("  veh ", v.kind, " ", v.mode, " st=", v.state, " left=", v.left, " tgt=", v.target, " got=", v.got, " stall=", int(v.stall), " cid=", v.cid)
+			for d in main.world.docks:
+				var pads := []
+				for q in d.pad:
+					pads.append(q.state + ":" + str(q.cid) if q else "-")
+				print("  dock ", d.kind, d.cell, " pads=", pads, " res=", d.pad_res, " veh=", d.vehicle != null)
+				for q in d.pad:
+					if q:
+						var fc: Vector2i = main.world.forklifts[0].cell()
+						print("    find_slot from ", fc, " -> ", main.world._find_slot(q.cargo, fc), " claimed=", q.claimed)
+			for r in main.world.racks:
+				print("  rack ", r.kind, r.cell, " rot=", r.rot, " slots=", r.slots.map(func(x): return 0 if x == null else 1), " res=", r.reserved)
+			for c in G.contracts:
+				print("  c ", c.id, " ", c.client, " ", c.state, " n=", c.n, " un=", c.unloaded, " lo=", c.loaded, " ", c.get("tin"), "->", c.get("tout"), " cu=", c.customs.get("stage", "") if not c.customs.is_empty() else "")
 	if args.has("quit") and t >= float(args.quit):
 		print("[test] done 收入 ", G.stats.earned, " 搬運 ", G.stats.pallets, " 完成委託 ", G.stats.contracts, " over=", G.over)
 		get_tree().quit()

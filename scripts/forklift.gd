@@ -198,6 +198,7 @@ func _detach() -> void:
 	p.node.get_parent().remove_child(p.node)
 	world.dyn.add_child(p.node)
 	p.claimed = false
+	p.inspect_dir = ""
 	if job.has("to_rack"):
 		var r = job.to_rack
 		r.reserved[job.to_slot] = false

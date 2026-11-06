@@ -32,6 +32,8 @@ var waypoints: Array = []   # [Vector3, rev]
 var speed_road := 12.0
 var length := 7.0
 var left := 0               # 還要卸的托盤數
+var target := 0             # 出貨：這一趟要裝幾板
+var got := 0                # 出貨：這一趟已裝幾板
 var stall := 0.0
 var dock_min := 0.0
 var queue_min := 0.0
@@ -48,10 +50,18 @@ func setup(w: World, c: Dictionary, m: String) -> void:
 	cid = int(c.id)
 	mode = m
 	cargo = c.cargo
-	kind = c.transport
+	kind = c.get("tin", c.transport) if m == "in" else c.get("tout", c.transport)
+	var cap: int = G.CAP.get(kind, 6)
 	if m == "in":
-		left = int(c.n) - int(c.unloaded)
+		left = mini(cap, int(c.n) - int(c.unloaded))
+	else:
+		target = mini(cap, int(c.unloaded) - int(c.loaded))
 	match kind:
+		"air":
+			model = M.plane()
+			position = Vector3(-330, 42, World.RUNWAY_Z)
+			rotation.y = PI / 2
+			speed_road = 30.0
 		"rail":
 			model = Node3D.new()
 			var loco := M.locomotive()
@@ -65,7 +75,7 @@ func setup(w: World, c: Dictionary, m: String) -> void:
 		"ship":
 			model = M.ship()
 			model.rotation.y = PI / 2
-			position = Vector3(-180, -0.3, World.SHIP_Z)
+			position = Vector3(-180, -0.55, World.SHIP_Z)
 			speed_road = 7.0
 		"van":
 			length = 4.8
@@ -98,7 +108,14 @@ func _request_dock() -> void:
 		"rail":
 			waypoints.append([Vector3(world.cell_center(dock.cell).x + 10.0, 0, World.RAIL_Z), false])
 		"ship":
-			waypoints.append([Vector3(world.cell_center(dock.cell).x, -0.3, World.SHIP_Z), false])
+			waypoints.append([Vector3(world.cell_center(dock.cell).x, -0.55, World.SHIP_Z), false])
+		"air":
+			var rz := World.RUNWAY_Z
+			waypoints.append([Vector3(-185, 0, rz), false])
+			waypoints.append([Vector3(-70, 0, rz), false])
+			waypoints.append([Vector3(-48, 0, rz), false])
+			waypoints.append([Vector3(-36, 0, World.APRON_Z), false])
+			waypoints.append([Vector3(-21, 0, World.APRON_Z), false])
 		_:
 			var bx: float = world.cell_center(dock.cell).x
 			var fz := World.FRONT_Z + 0.5 + length / 2.0
@@ -120,7 +137,9 @@ func _go_queue() -> void:
 		"rail":
 			_queue_pt = Vector3(-70 - idx * 45.0, 0, World.RAIL_Z)
 		"ship":
-			_queue_pt = Vector3(-90 - idx * 40.0, -0.3, World.SHIP_Z)
+			_queue_pt = Vector3(-90 - idx * 40.0, -0.55, World.SHIP_Z)
+		"air":
+			_queue_pt = Vector3(-330 - idx * 60.0, 42, World.RUNWAY_Z)
 		_:
 			_queue_pt = Vector3(-12 - idx * 9.0, 0, World.ROAD_Z - 2)
 	waypoints.append([_queue_pt, false])
@@ -132,7 +151,15 @@ func _leave_route() -> void:
 		"rail":
 			waypoints.append([Vector3(far + 60.0, 0, World.RAIL_Z), false])
 		"ship":
-			waypoints.append([Vector3(far + 80.0, -0.3, World.SHIP_Z), false])
+			waypoints.append([Vector3(far + 80.0, -0.55, World.SHIP_Z), false])
+		"air":
+			var rz := World.RUNWAY_Z
+			waypoints.append([Vector3(-34, 0, World.APRON_Z + 3.0), false])
+			waypoints.append([Vector3(-44, 0, rz + 3.0), false])
+			waypoints.append([Vector3(-56, 0, rz), false])
+			waypoints.append([Vector3(-90, 0, rz), false])
+			waypoints.append([Vector3(-200, 0, rz), false])
+			waypoints.append([Vector3(-360, 55, rz), false])
 		_:
 			var x := position.x
 			waypoints.append([Vector3(x, 0, World.FRONT_Z + 11.0), false])
@@ -146,20 +173,29 @@ func _drive(dt: float) -> bool:
 	var tgt: Vector3 = wp[0]
 	var rev: bool = wp[1]
 	var to := tgt - position
-	to.y = 0.0
+	if kind != "air":
+		to.y = 0.0
 	var dist := to.length()
 	var sp := speed_road
 	if kind in ["truck", "van", "police"] and position.z < World.ROAD_Z - 4.0:
 		sp = 5.0
+	if kind == "air" and position.y < 0.5 and position.x > -80.0:
+		sp = 6.0
 	if rev:
 		sp = 2.5
 	if dist < 0.08:
 		waypoints.remove_at(0)
 		return waypoints.is_empty()
 	var dir := to / dist
-	var yaw := atan2(dir.x, dir.z)
+	var flat := Vector2(dir.x, dir.z)
+	var yaw := atan2(dir.x, dir.z) if flat.length() > 0.05 else rotation.y
 	if rev:
 		yaw += PI
+	if kind == "air":
+		var diff2 := wrapf(yaw - rotation.y, -PI, PI)
+		rotation.y += clampf(diff2, -1.4 * dt, 1.4 * dt)
+		# 機頭俯仰：爬升時抬頭、降落時微微抬頭
+		model.rotation.x = lerpf(model.rotation.x, -clampf(dir.y * 1.5, -0.12, 0.25), minf(1.0, dt * 2.0))
 	if kind in ["truck", "van", "police"]:
 		var diff := wrapf(yaw - rotation.y, -PI, PI)
 		var tr := 3.5 if not rev else 2.5
@@ -184,6 +220,9 @@ func _process(delta: float) -> void:
 	if dt <= 0.0:
 		return
 	var dm := dt * G.MIN_PER_SEC
+	if kind == "ship" and model:
+		model.position.y = sin(_flash * 0.8) * 0.12
+		model.rotation.z = sin(_flash * 0.55) * 0.012
 	_update_transfers(dt)
 	match state:
 		"queue":
@@ -234,7 +273,8 @@ func _docked(dm: float) -> void:
 		return
 	if mode == "in":
 		if left <= 0 and transfers.is_empty():
-			c.state = "stored"
+			if int(c.unloaded) >= int(c.n):
+				c.state = "stored"
 			G.contracts_changed.emit()
 			_depart()
 			return
@@ -261,7 +301,7 @@ func _docked(dm: float) -> void:
 		if transfers.is_empty():
 			for i in 2:
 				var p = dock.pad[i]
-				if p != null and p.cid == cid and p.state == "pad_out" and not p.claimed:
+				if p != null and p.cid == cid and p.state == "pad_out" and not p.claimed and got + transfers.size() < target:
 					dock.pad[i] = null
 					p.state = "veh"
 					_start_transfer(p, _path_in(i).duplicate(), i, false)
@@ -277,6 +317,9 @@ func _docked(dm: float) -> void:
 		if transfers.is_empty() and int(c.loaded) >= int(c.unloaded):
 			G.finish_contract(c)
 			_depart()
+		elif transfers.is_empty() and got >= target:
+			G.toast.emit("%s 的第一批貨已出車，下一台馬上來。" % c.client if int(c.loaded) <= target else "%s 又出了一車，還剩 %d 板。" % [c.client, int(c.unloaded) - int(c.loaded)], "info")
+			_depart()
 
 func _path_in(i: int) -> Array:
 	var pad: Vector3 = dock.pad_pos(i)
@@ -286,7 +329,9 @@ func _path_in(i: int) -> Array:
 			return [Vector3(wx, 1.6, World.RAIL_Z), Vector3(pad.x, 1.0, -1.8), pad]
 		"ship":
 			var hx: float = pad.x
-			return [Vector3(position.x, 3.6, World.SHIP_Z + 2.0), Vector3(hx, 5.5, -13.5), Vector3(hx, 5.5, -0.8), Vector3(hx, 1.2, -0.2), pad]
+			return [Vector3(position.x, 4.2, World.SHIP_Z + 1.0), Vector3(hx, 6.0, World.SHIP_Z + 1.0), Vector3(hx, 5.5, -15.5), Vector3(hx, 5.5, -0.8), Vector3(hx, 1.2, -0.2), pad]
+		"air":
+			return [Vector3(position.x + 8.2, 2.6, position.z - 2.6), Vector3(-5.5, 2.4, position.z - 3.5), Vector3(-5.0, 2.4, pad.z), Vector3(-2.5, 2.3, pad.z), Vector3(-1.0, 0.6, pad.z), pad]
 		_:
 			var rear: Vector3 = pad + dock.out_dir * 2.4
 			return [rear + Vector3(0, 1.1, 0), rear + Vector3(0, 0.4, -1.2), pad]
@@ -305,6 +350,8 @@ func _update_transfers(dt: float) -> void:
 		var dur := 1.0 + segs * 0.5
 		if kind == "ship":
 			dur = 4.0
+		elif kind == "air":
+			dur = 2.6
 		tr.t = float(tr.t) + dt / dur
 		var t := clampf(float(tr.t), 0.0, 1.0)
 		var f := t * segs
@@ -324,6 +371,7 @@ func _update_transfers(dt: float) -> void:
 				p.node.global_position = dock.pad_pos(tr.i)
 			else:
 				var c := G.contract_by_id(cid)
+				got += 1
 				if not c.is_empty():
 					c.loaded = int(c.loaded) + 1
 					G.contracts_changed.emit()
@@ -333,6 +381,14 @@ func _depart() -> void:
 	if state == "leaving":
 		return
 	state = "leaving"
+	var c := G.contract_by_id(cid)
+	if not c.is_empty():
+		if mode == "in":
+			c["veh_in"] = false
+			c["next_in"] = G.minute + 15.0
+		else:
+			c["veh_out"] = false
+			c["next_out"] = G.minute + 15.0
 	world.release_dock(dock)
 	dock = null
 	_leave_route()
@@ -342,7 +398,8 @@ func _give_up(why: String) -> void:
 	if c.is_empty():
 		_depart()
 		return
-	var refused := left
+	var refused := int(c.n) - int(c.unloaded)
+	var old_n := int(c.n)
 	left = 0
 	if mode == "in":
 		c.n = int(c.unloaded)
@@ -350,7 +407,7 @@ func _give_up(why: String) -> void:
 			G.contracts.erase(c)
 			G.fail_contract(c, "%s %s，整批貨轉給別家倉庫了。" % [c.client, why], 8.0)
 		else:
-			c.pay = int(int(c.pay) * float(c.unloaded) / float(int(c.unloaded) + refused))
+			c.pay = int(int(c.pay) * float(c.unloaded) / float(old_n))
 			c.state = "stored"
 			G.fail_contract(c, "%s %s，帶著 %d 板貨離開了。" % [c.client, why, refused], 6.0)
 	_depart()

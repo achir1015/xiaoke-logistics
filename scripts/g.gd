@@ -12,7 +12,7 @@ signal game_over(title: String, body: String)
 signal day_started(day: int, report: String)
 signal property_changed
 
-const APP_VERSION := "1.0.0"
+const APP_VERSION := "1.1.0"
 const SAVE_PATH := "user://save.json"
 const MIN_PER_SEC := 5.0          # 1× 時，每現實秒 = 5 遊戲分鐘
 const START_MONEY := 20000
@@ -25,6 +25,8 @@ const BUILD := {
 		"desc": "4 個托盤位，插電保冷。生鮮、乳品、藥品專用。"},
 	"fragile": {"name": "易碎品籠架", "price": 1600, "upkeep": 15, "slots": 4, "cols": 2, "levels": 2, "cargo": ["fragile"],
 		"desc": "4 個托盤位，加墊防撞。玻璃、陶瓷、精密儀器專用。"},
+	"inspect": {"name": "海關查驗台", "price": 3000, "upkeep": 20, "slots": 2, "cols": 2, "levels": 1, "cargo": [],
+		"desc": "國際貨被抽中「C3 貨物查驗」時，抽驗的托盤要搬到這裡讓海關人員開箱檢查。"},
 }
 const FORKLIFT_PRICE := 3500
 const FORKLIFT_WAGE := 60
@@ -35,6 +37,9 @@ const RAIL_PRICE := 20000
 const RAIL_DAILY := 140
 const HARBOUR_PRICE := 45000
 const HARBOUR_DAILY := 300
+const AIRPORT_PRICE := 60000
+const AIRPORT_DAILY := 400
+const CAP := {"truck": 6, "van": 4, "rail": 12, "ship": 20, "air": 8}
 
 const CARGO := {
 	"general": {"name": "一般", "rate": 60, "color": Color(0.80, 0.60, 0.38)},
@@ -42,7 +47,7 @@ const CARGO := {
 	"fragile": {"name": "易碎", "rate": 90, "color": Color(0.96, 0.78, 0.82)},
 	"mystery": {"name": "不明貨箱", "rate": 0, "color": Color(0.20, 0.24, 0.22)},
 }
-const TRANSPORT := {"truck": "卡車", "rail": "火車", "ship": "貨輪", "van": "廂型車"}
+const TRANSPORT := {"truck": "卡車", "rail": "火車", "ship": "貨輪", "van": "廂型車", "air": "貨機"}
 
 const CLIENTS := [
 	["晨光食品", ["general", "cold"]], ["海風進口", ["general"]], ["阿福五金", ["general"]],
@@ -54,6 +59,9 @@ const CLIENTS := [
 ]
 const RAIL_CLIENTS := ["鐵道聯運", "南北快線貨運", "穀倉合作社", "鋼鐵大道"]
 const SHIP_CLIENTS := ["遠洋貿易", "藍鯨航運", "港都國際", "七海進出口"]
+const AIR_CLIENTS := ["雲翔航空貨運", "飛鳥快遞", "晶片之星科技", "極光生技", "環球精品"]
+const STAGE_NAMES := {"docs": "等待文件", "declared": "報關申報中", "review": "C2 書面審核中", "inspect_move": "C3 抽驗：搬到查驗台",
+	"inspecting": "C3 海關查驗中", "inspect_return": "C3 查驗完成：搬回貨架", "released": "已放行"}
 const MOB_NAMES := ["老周", "阿彪", "龍哥", "黑皮"]
 
 # ── 狀態 ──
@@ -69,6 +77,7 @@ var plots: int = 1
 var doors: Array = [0, 1]           # 已開啟的前門索引（每塊地 3 個）
 var rail: bool = false
 var harbour: bool = false
+var airport: bool = false
 var heat: float = 0.0
 var mob_deals: int = 0
 var yesterday: int = 0
@@ -85,6 +94,7 @@ var _autosave_min: float = 0.0
 var _neg_days: int = 0
 var world_snapshot: Dictionary = {}   # 由 World 填寫，存檔用
 var force_call := false               # 測試用
+var force_cls := ""                   # 測試用：C1／C2／C3
 
 func _ready() -> void:
 	rng.randomize()
@@ -178,6 +188,8 @@ func daily_cost() -> int:
 		c += RAIL_DAILY
 	if harbour:
 		c += HARBOUR_DAILY
+	if airport:
+		c += AIRPORT_DAILY
 	for k in world_snapshot.get("upkeep_items", []):
 		c += int(BUILD[k].upkeep)
 	c += FORKLIFT_WAGE * int(world_snapshot.get("forklifts", 1))
@@ -249,25 +261,45 @@ func _make_offer() -> Dictionary:
 		kinds.append("rail")
 	if harbour:
 		kinds.append("ship")
+	if airport:
+		kinds.append("air")
 	var tr: String = kinds[rng.randi() % kinds.size()]
 	var client := ""
 	var cargo := "general"
 	var n := 0
+	var intl := ""
+	var tin := tr
+	var tout := tr
+	var tot: Dictionary = world_snapshot.get("total", {})
 	match tr:
 		"rail":
 			client = RAIL_CLIENTS[rng.randi() % RAIL_CLIENTS.size()]
 			cargo = "general"
 			n = rng.randi_range(8, 12)
-		"ship":
-			client = SHIP_CLIENTS[rng.randi() % SHIP_CLIENTS.size()]
-			cargo = ["general", "general", "cold", "fragile"][rng.randi() % 4]
-			n = rng.randi_range(12, 18)
+			tout = "truck"
+		"ship", "air":
+			intl = "import" if rng.randf() < 0.6 else "export"
+			if tr == "ship":
+				client = SHIP_CLIENTS[rng.randi() % SHIP_CLIENTS.size()]
+				cargo = ["general", "general", "cold", "fragile"][rng.randi() % 4]
+				n = rng.randi_range(10, 16)
+			else:
+				client = AIR_CLIENTS[rng.randi() % AIR_CLIENTS.size()]
+				cargo = ["fragile", "cold", "general"][rng.randi() % 3]
+				n = rng.randi_range(4, 8)
+			if cargo != "general" and int(tot.get(cargo, 0)) == 0 and rng.randf() < 0.6:
+				cargo = "general"
+			if intl == "import":
+				tin = tr
+				tout = "truck"
+			else:
+				tin = "truck"
+				tout = tr
 		_:
 			var cl: Array = CLIENTS[rng.randi() % CLIENTS.size()]
 			client = cl[0]
 			var prefs: Array = cl[1]
 			cargo = prefs[rng.randi() % prefs.size()]
-			var tot: Dictionary = world_snapshot.get("total", {})
 			# 玩家還沒有這種貨架時，多半改找一般貨的客戶
 			if cargo != "general" and int(tot.get(cargo, 0)) == 0 and rng.randf() < 0.75:
 				for k in 20:
@@ -277,13 +309,13 @@ func _make_offer() -> Dictionary:
 						break
 				cargo = "general"
 			var cap := maxi(int(tot.get(cargo, 0)), 6)
-			n = rng.randi_range(2, clampi(cap / 3 + 1, 3, 4 + plots * 2 + stars() / 2))
-	var cross := rng.randf() < 0.3
+			n = rng.randi_range(2, clampi(cap / 3 + 1, 3, mini(CAP.truck, 4 + plots * 2 + stars() / 2)))
+	var cross := rng.randf() < (0.4 if tr == "air" else 0.3)
 	var arrive := _round_time(minute + rng.randf_range(90.0, 900.0))
 	var stay := 0.0
 	var days := 0
 	if cross:
-		stay = rng.randf_range(180.0, 420.0)
+		stay = rng.randf_range(240.0, 480.0) if intl != "" else rng.randf_range(180.0, 420.0)
 	else:
 		days = rng.randi_range(1, 3)
 		stay = days * 1440.0 + rng.randf_range(-240.0, 240.0)
@@ -297,15 +329,89 @@ func _make_offer() -> Dictionary:
 	pay *= (0.8 + stars() * 0.1) * rng.randf_range(0.88, 1.18)
 	if tr != "truck":
 		pay *= 1.15
+	if intl != "":
+		pay *= 1.3 if tr == "ship" else 1.6     # 報關服務費；空運貨價值高
 	var c := {
-		"id": next_id, "client": client, "transport": tr, "cargo": cargo, "n": n,
-		"arrive": arrive, "pickup": pickup, "cross": cross, "days": days,
+		"id": next_id, "client": client, "transport": tr, "tin": tin, "tout": tout, "intl": intl,
+		"cargo": cargo, "n": n, "arrive": arrive, "pickup": pickup, "cross": cross, "days": days,
 		"pay": int(round(pay / 10.0) * 10), "expires": minute + rng.randf_range(180.0, 360.0),
 		"state": "offer", "unloaded": 0, "loaded": 0, "spawned_in": false, "spawned_out": false,
-		"mystery": false, "late_pen": 0,
+		"mystery": false, "late_pen": 0, "customs": {},
 	}
+	if intl != "":
+		c.customs = _make_customs(c)
 	next_id += 1
 	return c
+
+# ── 海關 ──
+func _make_customs(c: Dictionary) -> Dictionary:
+	var names: Array = []
+	var by: String = c.transport
+	if c.intl == "import":
+		names = ["海運提單（B/L）" if by == "ship" else "空運提單（AWB）", "商業發票", "裝箱單"]
+		if c.cargo == "cold":
+			names.append("輸入檢疫證明")
+	else:
+		names = ["裝貨單（S/O）" if by == "ship" else "航空託運單", "商業發票", "裝箱單"]
+		if c.cargo == "cold":
+			names.append("輸出檢疫證明")
+	if c.cargo == "fragile":
+		names.append("貨物保險單")
+	var docs: Array = []
+	for nm in names:
+		var missing := rng.randf() < 0.2
+		docs.append({"name": nm, "ok": not missing, "eta": float(c.arrive) + rng.randf_range(60.0, 540.0) if missing else 0.0, "chased": false})
+	return {"stage": "docs", "cls": "", "t": 0.0, "docs": docs, "inspect_n": 0, "warned": false}
+
+func intl_label(c: Dictionary) -> String:
+	if c.get("intl", "") == "import":
+		return "%s進口" % TRANSPORT[c.transport]
+	if c.get("intl", "") == "export":
+		return "%s出口" % TRANSPORT[c.transport]
+	return TRANSPORT[c.get("transport", "truck")]
+
+func leg_text(c: Dictionary) -> String:
+	var tin: String = c.get("tin", c.transport)
+	var tout: String = c.get("tout", c.transport)
+	if tin == tout:
+		return TRANSPORT[tin]
+	return "%s進・%s出" % [TRANSPORT[tin], TRANSPORT[tout]]
+
+func customs_text(c: Dictionary) -> String:
+	var cu: Dictionary = c.get("customs", {})
+	if cu.is_empty():
+		return ""
+	var st: String = cu.stage
+	var t: String = STAGE_NAMES.get(st, st)
+	if st == "docs":
+		var miss := 0
+		for d in cu.docs:
+			if not d.ok:
+				miss += 1
+		if miss > 0:
+			t = "缺 %d 份文件" % miss
+	return t
+
+func missing_docs(c: Dictionary) -> int:
+	var miss := 0
+	for d in c.get("customs", {}).get("docs", []):
+		if not d.ok:
+			miss += 1
+	return miss
+
+func chase_doc(c: Dictionary, i: int) -> void:
+	var d: Dictionary = c.customs.docs[i]
+	if d.ok or d.chased:
+		return
+	d.chased = true
+	var soon := maxf(minute, float(c.arrive) - 60.0) + rng.randf_range(30.0, 90.0)
+	d.eta = minf(float(d.eta), soon)
+	toast.emit("已向 %s 催補「%s」" % [c.client, d.name], "info")
+	contracts_changed.emit()
+
+func customs_released(c: Dictionary) -> bool:
+	var cu: Dictionary = c.get("customs", {})
+	return cu.is_empty() or cu.stage == "released"
 
 func free_slots(cargo: String) -> int:
 	var cap: Dictionary = world_snapshot.get("free", {})
@@ -331,7 +437,7 @@ func fit_text(c: Dictionary) -> Array:
 	return ["空間不足（剩 %d）" % maxi(f, 0), "bad"]
 
 func accept_offer(c: Dictionary) -> void:
-	if c.transport == "rail" and not rail:
+	if (c.transport == "rail" and not rail) or (c.transport == "ship" and not harbour) or (c.transport == "air" and not airport):
 		return
 	offers.erase(c)
 	c.state = "booked"
@@ -402,7 +508,7 @@ func _maybe_call(dm: float) -> void:
 	var stay_days := rng.randi_range(1, 2)
 	var arrive := _round_time(minute + rng.randf_range(120.0, 300.0))
 	var c := {
-		"id": next_id, "client": MOB_NAMES[rng.randi() % MOB_NAMES.size()], "transport": "van", "cargo": "mystery",
+		"id": next_id, "client": MOB_NAMES[rng.randi() % MOB_NAMES.size()], "transport": "van", "tin": "van", "tout": "van", "intl": "", "customs": {}, "cargo": "mystery",
 		"n": k, "arrive": arrive, "pickup": _round_time(arrive + stay_days * 1440.0), "cross": false, "days": stay_days,
 		"pay": k * rng.randi_range(28, 40) * 100, "advance": k * 500, "expires": minute + 60.0,
 		"state": "offer", "unloaded": 0, "loaded": 0, "spawned_in": false, "spawned_out": false,
@@ -444,6 +550,7 @@ func new_game() -> void:
 	doors = [0, 1]
 	rail = false
 	harbour = false
+	airport = false
 	heat = 0.0
 	mob_deals = 0
 	yesterday = 0
@@ -459,6 +566,10 @@ func new_game() -> void:
 	for i in 2:
 		var o := _make_offer()
 		o.transport = "truck"
+		o.tin = "truck"
+		o.tout = "truck"
+		o.intl = ""
+		o.customs = {}
 		o.cargo = "general"
 		o.n = 3 + i
 		o.arrive = _round_time(minute + 60.0 + i * 120.0)
@@ -479,7 +590,7 @@ func save_game() -> void:
 	var data := {
 		"v": APP_VERSION, "money": money, "minute": minute, "rating": rating, "offers": offers,
 		"contracts": contracts, "next_id": next_id, "plots": plots, "doors": doors, "rail": rail,
-		"harbour": harbour, "heat": heat, "mob_deals": mob_deals, "yesterday": yesterday,
+		"harbour": harbour, "airport": airport, "heat": heat, "mob_deals": mob_deals, "yesterday": yesterday,
 		"today_income": today_income, "last_call_min": last_call_min, "stats": stats,
 		"world": world_snapshot, "tutorial_done": tutorial_done, "neg_days": _neg_days,
 	}
@@ -512,6 +623,7 @@ func load_game() -> bool:
 		doors.append(int(x))
 	rail = bool(d.rail)
 	harbour = bool(d.harbour)
+	airport = bool(d.get("airport", false))
 	heat = float(d.heat)
 	mob_deals = int(d.mob_deals)
 	yesterday = int(d.yesterday)
@@ -529,6 +641,17 @@ func load_game() -> bool:
 	return true
 
 func _fix_ints(c: Dictionary) -> void:
+	if not c.has("tin"):
+		c["tin"] = c.get("transport", "truck")
+		c["tout"] = c.get("transport", "truck")
+	if not c.has("intl"):
+		c["intl"] = ""
+	if not c.has("customs"):
+		c["customs"] = {}
+	c.erase("veh_in")
+	c.erase("veh_out")
+	if c.customs.has("inspect_n"):
+		c.customs.inspect_n = int(c.customs.inspect_n)
 	for k in ["id", "n", "pay", "unloaded", "loaded", "days", "late_pen", "advance"]:
 		if c.has(k):
 			c[k] = int(c[k])
